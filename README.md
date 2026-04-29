@@ -8,6 +8,7 @@ A global dictation tool for Windows. Press a hotkey anywhere, speak, and the tra
 - **Two transcription engines**: faster-whisper (CPU) or whisper.cpp (GPU/Vulkan for AMD GPUs)
 - **Optional LLM refinement**: uses Ollama + Gemma to fix grammar and make dictated text coherent
 - **System tray icon** with color feedback: green (ready), red (recording), blue (processing)
+- **Survives sleep/resume** — the global hotkey and tray icon are automatically re-registered after Windows suspends
 
 ## Prerequisites
 
@@ -19,8 +20,6 @@ A global dictation tool for Windows. Press a hotkey anywhere, speak, and the tra
 ### 1. Create a Python virtual environment
 
 ```bash
-cd /c/data/AI/custom-wisper
-
 # Create the virtual environment
 py -m venv .venv
 ```
@@ -95,7 +94,7 @@ python app.py --gpu --lang en --refine
 1. Press `Ctrl+Shift+Space` — tray icon turns **red** (recording)
 2. Speak your message
 3. Press `Ctrl+Shift+Space` again — icon turns **blue** (processing)
-4. Cleaned text is **typed at your cursor** (no clipboard used) — icon goes back to **green**
+4. Cleaned text is **typed at your cursor** (no clipboard used by default) — icon goes back to **green**
 
 ### Stopping the app
 
@@ -183,12 +182,13 @@ Edit `config.py` to change defaults:
 ## Project Structure
 
 ```
-custom-wisper/
+whisper-paste/
 ├── app.py              # Main entry point, hotkey listener, system tray
 ├── recorder.py         # Audio recording from microphone
 ├── transcriber.py      # Whisper transcription (faster-whisper or whisper.cpp)
 ├── refiner.py          # Ollama/Gemma text cleanup
 ├── clipboard_paste.py  # Clipboard + paste simulation
+├── power_monitor.py    # Re-registers hotkey/tray after Windows sleep/resume
 ├── config.py           # Settings
 └── requirements.txt    # Python dependencies
 ```
