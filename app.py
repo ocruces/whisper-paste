@@ -16,6 +16,7 @@ from clipboard_paste import paste_text
 recorder = Recorder()
 tray_icon: Icon = None
 processing = False
+_hotkey_handle = None
 
 
 def create_icon_image(color):
@@ -115,6 +116,28 @@ def on_quit(icon, item):
     icon.stop()
 
 
+def _register_hotkey():
+    global _hotkey_handle
+    _hotkey_handle = keyboard.add_hotkey(config.HOTKEY, on_hotkey, suppress=True)
+
+
+def on_resume():
+    global _hotkey_handle
+    try:
+        if tray_icon is not None:
+            tray_icon.visible = False
+            tray_icon.visible = True
+    except Exception as e:
+        print(f"Failed to refresh tray icon: {e}")
+    try:
+        if _hotkey_handle is not None:
+            keyboard.remove_hotkey(_hotkey_handle)
+    except (KeyError, ValueError):
+        pass
+    _register_hotkey()
+    print("Resumed — tray icon and hotkey re-registered.")
+
+
 def main():
     global tray_icon
 
@@ -153,7 +176,7 @@ def main():
     print("The app runs in the system tray. Right-click the tray icon to quit.")
 
     # Register global hotkey
-    keyboard.add_hotkey(config.HOTKEY, on_hotkey, suppress=True)
+    _register_hotkey()
 
     # Create and run system tray icon
     label = "Dictation+LLM" if config.USE_REFINER else "Dictation"
@@ -163,6 +186,8 @@ def main():
         title=f"{label} — Ready ({config.HOTKEY})",
         menu=Menu(MenuItem("Quit", on_quit)),
     )
+    from power_monitor import PowerMonitor
+    PowerMonitor(on_resume=on_resume)
     tray_icon.run()
 
 
