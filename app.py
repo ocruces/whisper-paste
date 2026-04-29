@@ -118,7 +118,9 @@ def on_quit(icon, item):
 
 def _register_hotkey():
     global _hotkey_handle
-    _hotkey_handle = keyboard.add_hotkey(config.HOTKEY, on_hotkey, suppress=True)
+    _hotkey_handle = keyboard.add_hotkey(
+        config.HOTKEY, on_hotkey, suppress=True, trigger_on_release=True
+    )
 
 
 def on_resume():
