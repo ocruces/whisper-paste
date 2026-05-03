@@ -15,4 +15,4 @@ def paste_text(text: str):
         keyboard.send("ctrl+v")
     else:
         time.sleep(0.1)
-        keyboard.write(text, delay=0.02)
+        keyboard.write(text, delay=0.04)
