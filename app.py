@@ -1,21 +1,39 @@
 """Voice Dictation Tool — Main application with system tray and global hotkey."""
 
 import argparse
+import logging
+import os
 import threading
+from logging.handlers import RotatingFileHandler
+
 import keyboard
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 
 import config
+import transcriber
 from recorder import Recorder
 from transcriber import transcribe
 from refiner import refine
 from clipboard_paste import paste_text
 
+logger = logging.getLogger("whisper-paste")
+
 recorder = Recorder()
 tray_icon: Icon = None
 processing = False
 _hotkey_handle = None
+
+# Guards every idle -> recording -> processing transition. It is held only for
+# the quick state flip (start the mic / arm the worker); the long work
+# (transcription, paste) runs in the worker thread with the lock released.
+_state_lock = threading.Lock()
+
+# Safety-cap timer that force-stops a recording after config.MAX_RECORD_SECONDS.
+_record_timer = None
+
+# Tray title reflecting model-load progress; updated by the preload thread.
+_startup_title = "Dictation — Loading model…"
 
 
 def create_icon_image(color):
@@ -29,6 +47,14 @@ def create_icon_image(color):
 ICON_IDLE = create_icon_image((40, 180, 80, 255))         # green = idle/ready
 ICON_RECORDING = create_icon_image((220, 40, 40, 255))    # red = recording
 ICON_PROCESSING = create_icon_image((40, 120, 220, 255))  # blue = processing
+
+
+def _label():
+    return "Dictation+LLM" if config.USE_REFINER else "Dictation"
+
+
+def _idle_title():
+    return f"{_label()} — Ready ({config.HOTKEY})"
 
 
 def update_tray(state, tooltip=None):
@@ -46,61 +72,104 @@ def update_tray(state, tooltip=None):
         tray_icon.title = tooltip or "Dictation — Processing..."
 
 
+def _start_record_timer():
+    """Arm the auto-stop safety-cap timer (cancels any existing one first)."""
+    global _record_timer
+    _cancel_record_timer()
+    timer = threading.Timer(config.MAX_RECORD_SECONDS, _on_record_timeout)
+    timer.daemon = True
+    _record_timer = timer
+    timer.start()
+
+
+def _cancel_record_timer():
+    """Cancel and forget the auto-stop timer if one is armed."""
+    global _record_timer
+    if _record_timer is not None:
+        _record_timer.cancel()
+        _record_timer = None
+
+
+def _begin_processing():
+    """Flip recording -> processing and spawn the worker.
+
+    Must be called while holding ``_state_lock`` with the recorder actually
+    recording and ``processing`` still False. Shared by ``on_hotkey`` (manual
+    stop) and the auto-stop timer so the transition happens exactly once.
+    """
+    global processing
+    processing = True
+    _cancel_record_timer()
+    update_tray("processing")
+    logger.info("Recording stopped. Processing...")
+    threading.Thread(target=process_recording, daemon=True).start()
+
+
+def _on_record_timeout():
+    """Auto-stop callback: process the recording if it is still in progress."""
+    with _state_lock:
+        if recorder.is_recording and not processing:
+            logger.info("Max recording time (%ss) reached — auto-stopping.",
+                        config.MAX_RECORD_SECONDS)
+            _begin_processing()
+
+
 def on_hotkey():
     """Handle the global hotkey press."""
-    global processing
+    with _state_lock:
+        if processing:
+            return  # ignore while processing a previous recording
 
-    if processing:
-        return  # ignore while processing a previous recording
-
-    if not recorder.is_recording:
-        # Start recording
-        recorder.start()
-        update_tray("recording")
-        print("Recording started...")
-    else:
-        # Stop recording and process
-        processing = True
-        update_tray("processing")
-        print("Recording stopped. Processing...")
-
-        # Run transcription + refinement in a thread to avoid blocking
-        threading.Thread(target=process_recording, daemon=True).start()
+        if not recorder.is_recording:
+            # Start recording. A mic failure must leave us cleanly idle.
+            try:
+                recorder.start()
+            except Exception as e:
+                logger.exception("Failed to start recording")
+                update_tray("idle", tooltip=f"Dictation — Mic error: {e}")
+                return
+            _start_record_timer()
+            update_tray("recording")
+            logger.info("Recording started...")
+        else:
+            _begin_processing()
 
 
 def process_recording():
-    """Transcribe, refine, and paste the recorded audio."""
+    """Transcribe, refine, and paste the recorded audio (runs off the lock)."""
     global processing
     try:
         audio = recorder.stop()
         if audio is None:
-            print("No audio captured.")
+            logger.info("No audio captured.")
+            update_tray("idle")
             return
 
-        # Transcribe
         raw_text = transcribe(audio)
-        print(f"Raw transcript: {raw_text}")
+        logger.info("Raw transcript: %s", raw_text)
 
         if not raw_text:
-            print("No speech detected.")
+            logger.info("No speech detected.")
+            update_tray("idle")
             return
 
         # Refine with LLM (only if --refine was passed)
         if config.USE_REFINER:
             cleaned_text = refine(raw_text)
-            print(f"Refined text: {cleaned_text}")
+            logger.info("Refined text: %s", cleaned_text)
         else:
             cleaned_text = raw_text
 
         # Paste at cursor
         paste_text(cleaned_text)
-        print("Text pasted.")
+        logger.info("Text pasted.")
+        update_tray("idle")
 
     except Exception as e:
-        print(f"Error during processing: {e}")
+        logger.exception("Error during processing")
+        update_tray("idle", tooltip=f"Dictation — Error: {e} (Ready)")
     finally:
         processing = False
-        update_tray("idle")
 
 
 def on_quit(icon, item):
@@ -122,19 +191,57 @@ def on_resume():
         if tray_icon is not None:
             tray_icon.visible = False
             tray_icon.visible = True
-    except Exception as e:
-        print(f"Failed to refresh tray icon: {e}")
+    except Exception:
+        logger.exception("Failed to refresh tray icon")
     try:
         if _hotkey_handle is not None:
             keyboard.remove_hotkey(_hotkey_handle)
     except (KeyError, ValueError):
         pass
     _register_hotkey()
-    print("Resumed — tray icon and hotkey re-registered.")
+    logger.info("Resumed — tray icon and hotkey re-registered.")
+
+
+def _setup_logging():
+    """Console + rotating file logging, with logs/ next to app.py."""
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(app_dir, config.LOG_DIR)
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "whisper-paste.log")
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    file_handler = RotatingFileHandler(
+        log_path, maxBytes=500_000, backupCount=2, encoding="utf-8"
+    )
+    file_handler.setFormatter(fmt)
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+    root.addHandler(console)
+    root.addHandler(file_handler)
+
+
+def _preload_model():
+    """Load the whisper model in the background so the first dictation is fast."""
+    global _startup_title
+    try:
+        transcriber.preload()
+        _startup_title = _idle_title()
+        logger.info("Model preloaded and ready.")
+    except Exception as e:
+        _startup_title = f"{_label()} — Model load error: {e}"
+        logger.exception("Model preload failed (will retry on first use)")
+    # The tray may not have been created yet when this runs; update_tray/title
+    # guards for that, and main() re-syncs the title after creating the icon.
+    if tray_icon is not None:
+        tray_icon.title = _startup_title
 
 
 def main():
-    global tray_icon
+    global tray_icon, _startup_title
 
     parser = argparse.ArgumentParser(description="Voice Dictation Tool")
     parser.add_argument(
@@ -150,37 +257,56 @@ def main():
         help="Language code (e.g. en, es, fr). Skips auto-detection for faster results.",
     )
     parser.add_argument(
-        "--clipboard", action="store_true",
-        help="Use clipboard (Ctrl+V) instead of direct typing. Faster but leaves text in clipboard history.",
+        "--model", type=str, default=None,
+        help="Whisper model name, e.g. tiny, base, small, distil-small.en.",
+    )
+    parser.add_argument(
+        "--type", action="store_true",
+        help="Type the text character-by-character instead of pasting via the clipboard.",
     )
     args = parser.parse_args()
 
     config.USE_REFINER = args.refine
     config.USE_GPU = args.gpu
-    config.USE_CLIPBOARD = args.clipboard
+    config.USE_CLIPBOARD = not args.type
     if args.lang:
         config.WHISPER_LANGUAGE = args.lang
+    if args.model:
+        config.WHISPER_MODEL = args.model
+
+    _setup_logging()
 
     engine = "whisper.cpp (GPU/Vulkan)" if config.USE_GPU else "faster-whisper (CPU)"
     refine_mode = " + Ollama refinement" if config.USE_REFINER else ""
-    lang_info = f", language: {config.WHISPER_LANGUAGE}" if config.WHISPER_LANGUAGE else ", language: auto-detect"
-    print("Voice Dictation Tool")
-    print(f"Engine: {engine}{refine_mode}{lang_info}")
-    print(f"Hotkey: {config.HOTKEY}")
-    print("Press the hotkey to start recording, press again to stop and paste.")
-    print("The app runs in the system tray. Right-click the tray icon to quit.")
+    lang_info = (
+        f", language: {config.WHISPER_LANGUAGE}"
+        if config.WHISPER_LANGUAGE else ", language: auto-detect"
+    )
+    output_mode = "clipboard paste" if config.USE_CLIPBOARD else "character typing"
+    logger.info("Voice Dictation Tool")
+    logger.info("Engine: %s%s%s", engine, refine_mode, lang_info)
+    logger.info("Model: %s | Output: %s", config.WHISPER_MODEL, output_mode)
+    logger.info("Hotkey: %s", config.HOTKEY)
+    logger.info("Press the hotkey to start recording, press again to stop and paste.")
+    logger.info("The app runs in the system tray. Right-click the tray icon to quit.")
+
+    # Preload the model in the background while the tray/hotkey come up.
+    _startup_title = f"{_label()} — Loading model…"
+    threading.Thread(target=_preload_model, daemon=True).start()
 
     # Register global hotkey
     _register_hotkey()
 
     # Create and run system tray icon
-    label = "Dictation+LLM" if config.USE_REFINER else "Dictation"
     tray_icon = Icon(
         "dictation",
         ICON_IDLE,
-        title=f"{label} — Ready ({config.HOTKEY})",
+        title=_startup_title,
         menu=Menu(MenuItem("Quit", on_quit)),
     )
+    # Re-sync in case preload finished while the icon was being constructed.
+    tray_icon.title = _startup_title
+
     from power_monitor import PowerMonitor
     PowerMonitor(on_resume=on_resume)
     tray_icon.run()
