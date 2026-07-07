@@ -8,6 +8,8 @@ A global dictation tool for Windows. Press a hotkey anywhere, speak, and the tra
 - **Two transcription engines**: faster-whisper (CPU) or whisper.cpp (GPU/Vulkan for AMD GPUs)
 - **Optional LLM refinement**: uses Ollama + Gemma to fix grammar and make dictated text coherent
 - **System tray icon** with color feedback: green (ready), red (recording), blue (processing)
+- **Fast first dictation** — the Whisper model is loaded and warmed up in the background at startup
+- **Clipboard-safe paste** — pastes via Ctrl+V and restores your previous clipboard, staying invisible to clipboard managers (Ditto) and Windows clipboard history (Win+V)
 - **Survives sleep/resume** — the global hotkey and tray icon are automatically re-registered after Windows suspends
 
 ## Prerequisites
@@ -73,8 +75,11 @@ Only needed if using `--refine` mode:
 # Default — faster-whisper on CPU, no LLM:
 python app.py
 
-# Set language (skips auto-detection, faster):
+# Force a language (skips auto-detection; transcribes AS this language):
 python app.py --lang en
+
+# Pick a different Whisper model:
+python app.py --model distil-small.en
 
 # Use whisper.cpp backend (GPU/Vulkan for AMD GPUs):
 python app.py --gpu
@@ -82,8 +87,8 @@ python app.py --gpu
 # Enable LLM text cleanup (requires Ollama running):
 python app.py --refine
 
-# Use clipboard paste instead of direct typing:
-python app.py --clipboard
+# Type character-by-character instead of pasting via the clipboard:
+python app.py --type
 
 # Combine flags:
 python app.py --gpu --lang en --refine
@@ -94,7 +99,17 @@ python app.py --gpu --lang en --refine
 1. Press `Ctrl+Shift+Space` — tray icon turns **red** (recording)
 2. Speak your message
 3. Press `Ctrl+Shift+Space` again — icon turns **blue** (processing)
-4. Cleaned text is **typed at your cursor** (no clipboard used by default) — icon goes back to **green**
+4. Cleaned text is **pasted at your cursor** and your previous clipboard is restored — icon goes back to **green**
+
+Recording auto-stops after 2 minutes (`config.MAX_RECORD_SECONDS`) as a safety cap, in case you forget to press the hotkey a second time.
+
+### Output modes (paste vs. type)
+
+By default the transcript is placed on the clipboard and pasted with **Ctrl+V**, then your previous clipboard contents are **restored** afterwards. The pasted text is stamped with the `Clipboard Viewer Ignore` and `ExcludeClipboardContentFromMonitorProcessing` clipboard formats, so clipboard managers (e.g. **Ditto**) and the Windows **Win+V** history never record it.
+
+Restore covers the standard clipboard formats: **text**, **images** (CF_DIB), and **copied files** (CF_HDROP). Limitation: app-private clipboard formats (e.g. Excel's internal cell format) are **not** snapshotted — the text/image representation survives a paste, but richer app-specific data does not.
+
+Pass `--type` to fall back to the old behavior: the text is typed **character-by-character** with no clipboard involvement (slower, but touches nothing on the clipboard).
 
 ### Stopping the app
 
@@ -107,8 +122,9 @@ python app.py --gpu --lang en --refine
 |------|-------------|
 | `--gpu` | Use whisper.cpp with Vulkan GPU acceleration instead of faster-whisper on CPU |
 | `--refine` | Enable Ollama/Gemma text refinement (fixes grammar, coherence) |
-| `--lang CODE` | Set language (e.g. `en`, `es`, `fr`). Skips auto-detection for faster results |
-| `--clipboard` | Use clipboard (Ctrl+V) instead of direct typing. Faster but leaves text in clipboard history |
+| `--lang CODE` | Force the transcription language (e.g. `en`, `es`, `fr`). Skips auto-detection and transcribes as this language regardless of what is spoken. Default is auto-detect |
+| `--model NAME` | Whisper model to load (e.g. `tiny`, `base`, `small`, `distil-small.en`). Overrides `WHISPER_MODEL` in `config.py` |
+| `--type` | Type the text character-by-character instead of pasting via the clipboard. Slower, but never touches the clipboard |
 
 ## Modes Comparison
 
@@ -183,12 +199,28 @@ Edit `config.py` to change defaults:
 
 ```
 whisper-paste/
-├── app.py              # Main entry point, hotkey listener, system tray
-├── recorder.py         # Audio recording from microphone
-├── transcriber.py      # Whisper transcription (faster-whisper or whisper.cpp)
-├── refiner.py          # Ollama/Gemma text cleanup
-├── clipboard_paste.py  # Clipboard + paste simulation
-├── power_monitor.py    # Re-registers hotkey/tray after Windows sleep/resume
-├── config.py           # Settings
-└── requirements.txt    # Python dependencies
+├── app.py                  # Main entry point, hotkey listener, system tray
+├── recorder.py             # Audio recording from microphone (numpy array, no temp WAV)
+├── transcriber.py          # Whisper transcription (faster-whisper or whisper.cpp) + preload/warm-up
+├── refiner.py              # Ollama/Gemma text cleanup
+├── clipboard_paste.py      # Output: clipboard paste (+ restore) or character typing
+├── clipboard_win.py        # Win32 clipboard snapshot/restore, invisible to clipboard managers
+├── power_monitor.py        # Re-registers hotkey/tray after Windows sleep/resume
+├── config.py               # Settings
+├── tests/                  # pytest test suite
+├── requirements.txt        # Python dependencies
+└── requirements-dev.txt    # Extra dependencies for running the tests
+```
+
+## Logging
+
+The app logs to the console and to a rotating log file at `logs/whisper-paste.log` (next to `app.py`, kept to a few rotated files). This is especially useful when running under `pythonw` with no console attached — check the log file to see what happened.
+
+## Development
+
+There is a small pytest suite under `tests/`. Install the dev dependencies and run it from the venv:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
 ```
