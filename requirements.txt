@@ -3,7 +3,6 @@ pywhispercpp
 sounddevice
 numpy
 keyboard
-pyperclip
 pystray
 Pillow
 pywin32

@@ -1,0 +1,126 @@
+"""Tests for clipboard_paste — clipboard_win and keyboard are faked.
+
+Verifies the paste orchestration (order of operations, sleeps, fallback,
+failure tolerance) without touching the real clipboard or sending keystrokes.
+"""
+
+import sys
+import types
+
+import pytest
+
+import config
+
+
+@pytest.fixture
+def cp(monkeypatch):
+    events = []
+
+    fake_cw = types.ModuleType("clipboard_win")
+
+    def snapshot():
+        events.append(("snapshot",))
+        return {"snap": 1}
+
+    def set_text(t):
+        events.append(("set_text", t))
+
+    def restore(s):
+        events.append(("restore", s))
+
+    fake_cw.snapshot = snapshot
+    fake_cw.set_text = set_text
+    fake_cw.restore = restore
+
+    fake_kb = types.ModuleType("keyboard")
+
+    def send(k):
+        events.append(("send", k))
+
+    def write(t, delay=None):
+        events.append(("write", t, delay))
+
+    fake_kb.send = send
+    fake_kb.write = write
+
+    monkeypatch.setitem(sys.modules, "clipboard_win", fake_cw)
+    monkeypatch.setitem(sys.modules, "keyboard", fake_kb)
+    sys.modules.pop("clipboard_paste", None)
+    import clipboard_paste
+
+    monkeypatch.setattr(
+        clipboard_paste.time, "sleep", lambda d: events.append(("sleep", d))
+    )
+
+    saved_use = config.USE_CLIPBOARD
+    saved_delay = getattr(config, "CLIPBOARD_RESTORE_DELAY", None)
+    yield clipboard_paste, fake_cw, fake_kb, events
+    config.USE_CLIPBOARD = saved_use
+    if saved_delay is not None:
+        config.CLIPBOARD_RESTORE_DELAY = saved_delay
+    sys.modules.pop("clipboard_paste", None)
+
+
+def test_default_path_order_and_delays(cp):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = True
+    config.CLIPBOARD_RESTORE_DELAY = 0.3
+
+    clipboard_paste.paste_text("hi")
+
+    kinds = [e[0] for e in events]
+    assert kinds == ["snapshot", "set_text", "sleep", "send", "sleep", "restore"]
+    assert ("set_text", "hi") in events
+    assert ("send", "ctrl+v") in events
+    assert ("restore", {"snap": 1}) in events
+
+    sleeps = [e[1] for e in events if e[0] == "sleep"]
+    assert sleeps == [0.1, 0.3]  # focus settle, then restore delay
+
+
+def test_typing_fallback_never_touches_clipboard(cp):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = False
+
+    clipboard_paste.paste_text("hello")
+
+    kinds = [e[0] for e in events]
+    assert "snapshot" not in kinds
+    assert "set_text" not in kinds
+    assert "restore" not in kinds
+    assert "send" not in kinds
+    assert ("write", "hello", 0.04) in events
+
+
+def test_snapshot_failure_still_pastes(cp, monkeypatch):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = True
+    config.CLIPBOARD_RESTORE_DELAY = 0.3
+
+    def boom():
+        raise RuntimeError("clipboard busy")
+
+    monkeypatch.setattr(fake_cw, "snapshot", boom)
+
+    clipboard_paste.paste_text("hi")
+
+    assert ("set_text", "hi") in events
+    assert ("send", "ctrl+v") in events
+    # Nothing to restore when the snapshot never succeeded.
+    assert "restore" not in [e[0] for e in events]
+
+
+def test_restore_failure_does_not_raise(cp, monkeypatch):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = True
+    config.CLIPBOARD_RESTORE_DELAY = 0.3
+
+    def boom(s):
+        raise RuntimeError("clipboard busy")
+
+    monkeypatch.setattr(fake_cw, "restore", boom)
+
+    # Must not propagate — paste already happened.
+    clipboard_paste.paste_text("hi")
+
+    assert ("send", "ctrl+v") in events

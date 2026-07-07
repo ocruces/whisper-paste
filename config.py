@@ -16,7 +16,13 @@ OLLAMA_MODEL = "gemma3:4b"
 USE_REFINER = False  # toggled via --refine CLI flag
 
 # Output settings
-USE_CLIPBOARD = False  # default: type text directly (no clipboard). Enable via --clipboard
+# Default: paste via the clipboard (fast, and kept out of clipboard managers /
+# Win+V history) then restore the user's previous clipboard. The --type CLI flag
+# switches to slow character-by-character typing.
+USE_CLIPBOARD = True
+# Time the target app gets to read the clipboard before we restore the previous
+# contents. Too short and the paste can miss; too long delays the restore.
+CLIPBOARD_RESTORE_DELAY = 0.3
 
 # Audio settings
 SAMPLE_RATE = 16000  # Whisper expects 16kHz
