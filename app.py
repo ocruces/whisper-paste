@@ -1,7 +1,6 @@
 """Voice Dictation Tool — Main application with system tray and global hotkey."""
 
 import argparse
-import os
 import threading
 import keyboard
 from PIL import Image, ImageDraw
@@ -73,13 +72,13 @@ def process_recording():
     """Transcribe, refine, and paste the recorded audio."""
     global processing
     try:
-        audio_path = recorder.stop()
-        if not audio_path:
+        audio = recorder.stop()
+        if audio is None:
             print("No audio captured.")
             return
 
         # Transcribe
-        raw_text = transcribe(audio_path)
+        raw_text = transcribe(audio)
         print(f"Raw transcript: {raw_text}")
 
         if not raw_text:
@@ -96,12 +95,6 @@ def process_recording():
         # Paste at cursor
         paste_text(cleaned_text)
         print("Text pasted.")
-
-        # Clean up temp file
-        try:
-            os.unlink(audio_path)
-        except OSError:
-            pass
 
     except Exception as e:
         print(f"Error during processing: {e}")

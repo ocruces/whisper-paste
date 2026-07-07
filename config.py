@@ -8,6 +8,7 @@ WHISPER_MODEL = "small"  # Options: tiny, base, small, medium, large-v3
 WHISPER_DEVICE = "cpu"   # CPU mode (no CUDA needed)
 WHISPER_LANGUAGE = None   # None = auto-detect, or set e.g. "en", "es", "fr"
 USE_GPU = False          # toggled via --gpu CLI flag (uses whisper.cpp with Vulkan)
+BEAM_SIZE = 5            # beam search width for the faster-whisper branch
 
 # Ollama settings (only used when --refine flag is passed)
 OLLAMA_URL = "http://localhost:11434"

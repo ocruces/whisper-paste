@@ -1,7 +1,5 @@
 """Audio recording module using sounddevice."""
 
-import tempfile
-import wave
 import numpy as np
 import sounddevice as sd
 from config import SAMPLE_RATE, CHANNELS
@@ -18,19 +16,28 @@ class Recorder:
         return self._recording
 
     def start(self):
-        """Start recording from the default microphone."""
+        """Start recording from the default microphone.
+
+        Only marks the recorder as recording once the InputStream has been
+        created and started, so a mic failure leaves it in a clean idle state
+        and the exception propagates to the caller.
+        """
         self._frames = []
-        self._recording = True
-        self._stream = sd.InputStream(
+        stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="float32",
             callback=self._callback,
         )
-        self._stream.start()
+        stream.start()
+        self._stream = stream
+        self._recording = True
 
-    def stop(self) -> str:
-        """Stop recording and return path to a temporary WAV file."""
+    def stop(self):
+        """Stop recording and return a 1-D float32 numpy array (16kHz mono).
+
+        Returns None if no audio frames were captured.
+        """
         self._recording = False
         if self._stream:
             self._stream.stop()
@@ -40,14 +47,9 @@ class Recorder:
         if not self._frames:
             return None
 
-        audio = np.concatenate(self._frames, axis=0)
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        with wave.open(tmp.name, "wb") as wf:
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)  # 16-bit
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes((audio * 32767).astype(np.int16).tobytes())
-        return tmp.name
+        # Frames arrive shaped (n, 1) from the mono stream; flatten to 1-D.
+        audio = np.concatenate(self._frames, axis=0).astype(np.float32).flatten()
+        return audio
 
     def _callback(self, indata, frames, time_info, status):
         if self._recording:
