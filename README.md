@@ -166,7 +166,7 @@ scripts\install.ps1 -Dev
 .venv\Scripts\python.exe -m pytest
 ```
 
-The console script `whisper-paste` and `python -m whisper_paste` are equivalent entry points.
+After an editable install (`.venv\Scripts\python.exe -m pip install -e .`), the console script `whisper-paste` becomes available as an equivalent entry point to `python -m whisper_paste`.
 
 ## License
 

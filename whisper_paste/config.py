@@ -32,7 +32,7 @@ CHANNELS = 1         # Mono audio
 # seconds so a forgotten/stuck recording can't run forever.
 MAX_RECORD_SECONDS = 120
 
-# Logging: directory (relative to the app directory) for the rotating log file.
+# Logging: directory (relative to the project root) for the rotating log file.
 LOG_DIR = "logs"
 
 # Refiner prompt
