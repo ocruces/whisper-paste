@@ -124,3 +124,25 @@ def test_restore_failure_does_not_raise(cp, monkeypatch):
     clipboard_paste.paste_text("hi")
 
     assert ("send", "ctrl+v") in events
+
+
+def test_set_text_failure_restores_and_types(cp, monkeypatch):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = True
+    config.CLIPBOARD_RESTORE_DELAY = 0.3
+
+    def boom(t):
+        raise RuntimeError("clipboard busy")
+
+    monkeypatch.setattr(fake_cw, "set_text", boom)
+
+    # Must not propagate, and the transcript must still be delivered.
+    clipboard_paste.paste_text("hi")
+
+    kinds = [e[0] for e in events]
+    # Snapshot was taken, set_text failed, snapshot restored, then typed.
+    assert kinds == ["snapshot", "restore", "sleep", "write"]
+    assert ("restore", {"snap": 1}) in events
+    assert ("write", "hi", 0.04) in events
+    # We must not have pasted with ctrl+v after set_text failed.
+    assert "send" not in kinds

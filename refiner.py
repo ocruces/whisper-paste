@@ -1,9 +1,12 @@
 """Text refinement using Ollama (Gemma) to clean up dictated text."""
 
 import json
+import logging
 import urllib.request
 import urllib.error
 from config import OLLAMA_URL, OLLAMA_MODEL, REFINER_PROMPT
+
+logger = logging.getLogger(__name__)
 
 
 def refine(raw_text: str) -> str:
@@ -34,5 +37,5 @@ def refine(raw_text: str) -> str:
             refined = body.get("response", "").strip()
             return refined if refined else raw_text
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-        print(f"Ollama unavailable ({e}), returning raw transcript.")
+        logger.warning("Ollama unavailable (%s), returning raw transcript.", e)
         return raw_text

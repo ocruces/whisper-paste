@@ -1,10 +1,13 @@
 """Speech-to-text transcription — supports faster-whisper (CPU) and whisper.cpp (GPU/Vulkan)."""
 
+import logging
 import threading
 
 import numpy as np
 
 import config
+
+logger = logging.getLogger(__name__)
 
 _model = None
 _backend = None
@@ -27,16 +30,16 @@ def _get_model():
             _backend = "whisper.cpp"
             from pywhispercpp.model import Model
 
-            print(f"Loading whisper.cpp model '{config.WHISPER_MODEL}' (GPU/Vulkan)...")
+            logger.info("Loading whisper.cpp model '%s' (GPU/Vulkan)...", config.WHISPER_MODEL)
             _model = Model(config.WHISPER_MODEL)
-            print("whisper.cpp model loaded.")
+            logger.info("whisper.cpp model loaded.")
         else:
             _backend = "faster-whisper"
             from faster_whisper import WhisperModel
 
-            print(f"Loading faster-whisper model '{config.WHISPER_MODEL}' on CPU...")
+            logger.info("Loading faster-whisper model '%s' on CPU...", config.WHISPER_MODEL)
             _model = WhisperModel(config.WHISPER_MODEL, device="cpu", compute_type="int8")
-            print("faster-whisper model loaded.")
+            logger.info("faster-whisper model loaded.")
 
     return _model
 
@@ -74,5 +77,5 @@ def preload():
     _get_model()
     try:
         transcribe(np.zeros(8000, dtype=np.float32))
-    except Exception as e:
-        print(f"Warm-up transcription failed (continuing anyway): {e}")
+    except Exception:
+        logger.warning("Warm-up transcription failed (continuing anyway)", exc_info=True)
