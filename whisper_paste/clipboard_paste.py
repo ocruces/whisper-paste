@@ -5,7 +5,7 @@ import time
 
 import keyboard
 
-import clipboard_win
+from whisper_paste import clipboard_win
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ def _type_text(text: str):
 
 def paste_text(text: str):
     """Output text at the current cursor position."""
-    import config
+    from whisper_paste import config
 
     if config.USE_CLIPBOARD:
         # Snapshot the user's clipboard so we can put it back afterwards. If the

@@ -8,8 +8,8 @@ its collaborators (`transcribe`, `paste_text`, `refine`, `recorder`,
 
 import pytest
 
-import app
-import config
+from whisper_paste import app
+from whisper_paste import config
 
 
 # --------------------------------------------------------------------------- #

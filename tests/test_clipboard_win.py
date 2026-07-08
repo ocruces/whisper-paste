@@ -4,6 +4,7 @@ These never touch the real Windows clipboard: a FakeClipboard instance is
 injected via sys.modules before clipboard_win is (re)imported.
 """
 
+import importlib
 import struct
 import sys
 
@@ -65,8 +66,11 @@ class FakeClipboard:
 def cw(monkeypatch):
     fake = FakeClipboard()
     monkeypatch.setitem(sys.modules, "win32clipboard", fake)
-    sys.modules.pop("clipboard_win", None)
-    import clipboard_win
+    # Force a genuinely fresh import so the module binds our fake win32clipboard.
+    # `from whisper_paste import clipboard_win` would return the already-imported
+    # real module via the package attribute; import_module re-executes it.
+    sys.modules.pop("whisper_paste.clipboard_win", None)
+    clipboard_win = importlib.import_module("whisper_paste.clipboard_win")
     # Don't actually sleep between retries.
     monkeypatch.setattr(clipboard_win.time, "sleep", lambda *a, **k: None)
     # In production, handle-only formats (HDROP + ignore) are copied into global
@@ -74,7 +78,7 @@ def cw(monkeypatch):
     # fake clipboard captures them and tests can inspect the byte payloads.
     monkeypatch.setattr(clipboard_win, "_global_handle", lambda data: data)
     yield clipboard_win, fake
-    sys.modules.pop("clipboard_win", None)
+    sys.modules.pop("whisper_paste.clipboard_win", None)
 
 
 def _ignore_formats(clipboard_win):

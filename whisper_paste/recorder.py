@@ -2,7 +2,7 @@
 
 import numpy as np
 import sounddevice as sd
-from config import SAMPLE_RATE, CHANNELS
+from whisper_paste.config import SAMPLE_RATE, CHANNELS
 
 
 class Recorder:

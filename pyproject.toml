@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whisper-paste"
+version = "1.0.0"
+description = "Windows voice-dictation tray app — global hotkey, local Whisper, instant paste."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "faster-whisper",
+    "pywhispercpp",
+    "sounddevice",
+    "numpy",
+    "keyboard",
+    "pystray",
+    "Pillow",
+    "pywin32",
+]
+
+[project.scripts]
+whisper-paste = "whisper_paste.app:main"
+
+[tool.setuptools]
+packages = ["whisper_paste"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

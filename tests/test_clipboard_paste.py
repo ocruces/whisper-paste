@@ -4,12 +4,14 @@ Verifies the paste orchestration (order of operations, sleeps, fallback,
 failure tolerance) without touching the real clipboard or sending keystrokes.
 """
 
+import importlib
 import sys
 import types
 
 import pytest
 
-import config
+import whisper_paste
+from whisper_paste import config
 
 
 @pytest.fixture
@@ -43,10 +45,14 @@ def cp(monkeypatch):
     fake_kb.send = send
     fake_kb.write = write
 
-    monkeypatch.setitem(sys.modules, "clipboard_win", fake_cw)
+    # clipboard_paste does `from whisper_paste import clipboard_win`, which resolves
+    # via the package attribute first — so override that attribute (not just
+    # sys.modules) and re-import clipboard_paste fresh so it binds the fake.
+    monkeypatch.setattr(whisper_paste, "clipboard_win", fake_cw, raising=False)
+    monkeypatch.setitem(sys.modules, "whisper_paste.clipboard_win", fake_cw)
     monkeypatch.setitem(sys.modules, "keyboard", fake_kb)
-    sys.modules.pop("clipboard_paste", None)
-    import clipboard_paste
+    sys.modules.pop("whisper_paste.clipboard_paste", None)
+    clipboard_paste = importlib.import_module("whisper_paste.clipboard_paste")
 
     monkeypatch.setattr(
         clipboard_paste.time, "sleep", lambda d: events.append(("sleep", d))
@@ -58,7 +64,7 @@ def cp(monkeypatch):
     config.USE_CLIPBOARD = saved_use
     if saved_delay is not None:
         config.CLIPBOARD_RESTORE_DELAY = saved_delay
-    sys.modules.pop("clipboard_paste", None)
+    sys.modules.pop("whisper_paste.clipboard_paste", None)
 
 
 def test_default_path_order_and_delays(cp):

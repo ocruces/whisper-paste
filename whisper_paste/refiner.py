@@ -4,7 +4,7 @@ import json
 import logging
 import urllib.request
 import urllib.error
-from config import OLLAMA_URL, OLLAMA_MODEL, REFINER_PROMPT
+from whisper_paste.config import OLLAMA_URL, OLLAMA_MODEL, REFINER_PROMPT
 
 logger = logging.getLogger(__name__)
 

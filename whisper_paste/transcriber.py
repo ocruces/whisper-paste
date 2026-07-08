@@ -5,7 +5,7 @@ import threading
 
 import numpy as np
 
-import config
+from whisper_paste import config
 
 logger = logging.getLogger(__name__)
 

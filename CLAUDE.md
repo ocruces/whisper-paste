@@ -4,21 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Run / Develop
 
-Windows-only project. No linter or build step — the app is a Python script run from a venv. There is a pytest suite under `tests/`.
+Windows-only project. The app is the `whisper_paste` package, run from a venv. No
+linter step; there is a pytest suite under `tests/`. Run it as a module (`python -m
+whisper_paste`) or via the `whisper-paste` console script installed by `pip install -e .`.
 
 ```bash
 # Activate venv (Git Bash)
 source .venv/Scripts/activate
 
 # Run (faster-whisper on CPU, no LLM refinement)
-python app.py
+python -m whisper_paste
 
 # Useful flag combos while developing
-python app.py --lang en                    # FORCE language en (no auto-detect)
-python app.py --model distil-small.en      # pick a different whisper model
-python app.py --gpu                        # whisper.cpp w/ Vulkan (AMD GPU)
-python app.py --refine                     # requires `ollama serve` running locally
-python app.py --type                       # type char-by-char instead of clipboard paste
+python -m whisper_paste --lang en                    # FORCE language en (no auto-detect)
+python -m whisper_paste --model distil-small.en      # pick a different whisper model
+python -m whisper_paste --gpu                        # whisper.cpp w/ Vulkan (AMD GPU)
+python -m whisper_paste --refine                     # requires `ollama serve` running locally
+python -m whisper_paste --type                       # type char-by-char instead of clipboard paste
 
 # Tests (deps in requirements-dev.txt)
 pip install -r requirements-dev.txt
@@ -31,7 +33,9 @@ The `--gpu` path needs `pywhispercpp` rebuilt with `GGML_VULKAN=1` — the PyPI 
 
 ### Runtime model: state machine driven by a global hotkey
 
-`app.py` is the only entry point. It owns three pieces of mutable state:
+`whisper_paste/app.py` holds the entry point (`main`), launched via `python -m
+whisper_paste` — through `whisper_paste/__main__.py` — or the `whisper-paste` console
+script. It owns three pieces of mutable state:
 - `recorder` — a `Recorder` whose `is_recording` flag distinguishes "armed" from "recording"
 - `processing` — module-level guard that ignores hotkey presses during transcription
 - `tray_icon` — a `pystray.Icon` whose color (green/red/blue) mirrors the state above
@@ -44,7 +48,7 @@ Separately, `main()` spawns `_preload_model` on a daemon thread at startup: it c
 
 ### Config module is mutated at startup
 
-`config.py` holds defaults as module-level globals (`USE_GPU`, `USE_REFINER`, `USE_CLIPBOARD`, `WHISPER_LANGUAGE`). `main()` parses CLI flags and **writes** to those attributes before any other module reads them. Other modules then `import config` and read attributes at call time (not at import time) — that's why e.g. `clipboard_paste.py` does `import config` inside the function. Don't replace this with `from config import X` at module top, or CLI flags will silently stop working.
+`config.py` holds defaults as module-level globals (`USE_GPU`, `USE_REFINER`, `USE_CLIPBOARD`, `WHISPER_LANGUAGE`). `main()` parses CLI flags and **writes** to those attributes before any other module reads them. Other modules then `from whisper_paste import config` (a module reference) and read attributes at call time (not at import time) — that's why e.g. `clipboard_paste.py` does `from whisper_paste import config` inside the function. Don't replace this with `from whisper_paste.config import USE_GPU` (binding the value) at module top, or CLI flags will silently stop working. Immutable settings that are never CLI-mutated (e.g. `SAMPLE_RATE`, `OLLAMA_URL`) are still value-imported directly, which is fine.
 
 ### Transcription backend is chosen lazily
 

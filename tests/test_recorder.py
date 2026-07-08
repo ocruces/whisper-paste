@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import sounddevice
 
-from recorder import Recorder
+from whisper_paste.recorder import Recorder
 
 
 def _make_fake_stream(store, start=None):

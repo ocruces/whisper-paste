@@ -8,8 +8,8 @@ import types
 import numpy as np
 import pytest
 
-import config
-import transcriber
+from whisper_paste import config
+from whisper_paste import transcriber
 
 
 @pytest.fixture(autouse=True)

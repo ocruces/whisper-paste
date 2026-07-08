@@ -8,7 +8,7 @@ back to the raw transcript, and that empty input short-circuits with no call.
 import json
 import urllib.error
 
-import refiner
+from whisper_paste import refiner
 
 
 class _FakeResponse:

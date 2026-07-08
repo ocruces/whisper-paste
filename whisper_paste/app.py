@@ -15,12 +15,12 @@ import winerror
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 
-import config
-import transcriber
-from recorder import Recorder
-from transcriber import transcribe
-from refiner import refine
-from clipboard_paste import paste_text
+from whisper_paste import config
+from whisper_paste import transcriber
+from whisper_paste.recorder import Recorder
+from whisper_paste.transcriber import transcribe
+from whisper_paste.refiner import refine
+from whisper_paste.clipboard_paste import paste_text
 
 logger = logging.getLogger("whisper-paste")
 
@@ -267,9 +267,9 @@ def on_resume():
 
 
 def _setup_logging():
-    """Console + rotating file logging, with logs/ next to app.py."""
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    log_dir = os.path.join(app_dir, config.LOG_DIR)
+    """Console + rotating file logging, with logs/ in the project root."""
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    log_dir = os.path.join(project_root, config.LOG_DIR)
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "whisper-paste.log")
 
@@ -384,7 +384,7 @@ def main():
     except Exception:
         logger.exception("Failed to register console control handler")
 
-    from power_monitor import PowerMonitor
+    from whisper_paste.power_monitor import PowerMonitor
     PowerMonitor(on_resume=on_resume)
     # Belt-and-braces: if a stray KeyboardInterrupt still surfaces from the
     # pump, exit cleanly via the same shutdown path.
