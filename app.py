@@ -3,10 +3,15 @@
 import argparse
 import logging
 import os
+import sys
 import threading
 from logging.handlers import RotatingFileHandler
 
 import keyboard
+import win32api
+import win32con
+import win32event
+import winerror
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 
@@ -34,6 +39,14 @@ _record_timer = None
 
 # Tray title reflecting model-load progress; updated by the preload thread.
 _startup_title = "Dictation — Loading model…"
+
+# Held for the whole process lifetime so the single-instance named mutex is not
+# released early (a released mutex would let a second launch slip through).
+_single_instance_mutex = None
+
+# Guards _shutdown() so the Quit menu item and the console ctrl handler (which
+# runs on a separate OS thread) cannot each tear the tray down twice.
+_shutting_down = False
 
 
 def create_icon_image(color):
@@ -172,10 +185,61 @@ def process_recording():
         processing = False
 
 
+def _shutdown():
+    """Clean shutdown shared by the Quit menu item and the console ctrl handler.
+
+    Idempotent (safe to call twice) and thread-safe to call from the console
+    handler's OS thread — pystray's ``Icon.stop()`` may be called from any
+    thread. Unhooks the global hotkey and stops the tray icon.
+    """
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+    try:
+        keyboard.unhook_all()
+    except Exception:
+        logger.exception("Failed to unhook keyboard during shutdown")
+    if tray_icon is not None:
+        try:
+            tray_icon.stop()
+        except Exception:
+            logger.exception("Failed to stop tray icon during shutdown")
+
+
 def on_quit(icon, item):
-    """Quit the application."""
-    keyboard.unhook_all()
-    icon.stop()
+    """Quit the application (Quit menu item)."""
+    _shutdown()
+
+
+def _console_ctrl_handler(ctrl_type):
+    """Handle console CTRL events so Ctrl+C actually terminates the app.
+
+    KeyboardInterrupt cannot cleanly unwind pystray's native Win32 message
+    pump, so we intercept the control event here and run the same clean
+    shutdown as the Quit menu item. Returns True when handled so the default
+    handler does not also fire.
+    """
+    if ctrl_type in (win32con.CTRL_C_EVENT, win32con.CTRL_BREAK_EVENT,
+                     win32con.CTRL_CLOSE_EVENT):
+        logger.info("Console control event %s received — shutting down.", ctrl_type)
+        _shutdown()
+        return True
+    return False
+
+
+def _acquire_single_instance():
+    """Acquire the single-instance named mutex.
+
+    Returns True if this is the only running instance, False if another
+    WhisperPaste is already running. The handle is stashed on a module global
+    so it lives for the whole process lifetime.
+    """
+    global _single_instance_mutex
+    _single_instance_mutex = win32event.CreateMutex(
+        None, False, "WhisperPaste_SingleInstance"
+    )
+    return win32api.GetLastError() != winerror.ERROR_ALREADY_EXISTS
 
 
 def _register_hotkey():
@@ -276,6 +340,12 @@ def main():
 
     _setup_logging()
 
+    # Refuse to start a second instance — two would both register the global
+    # hotkey and race on the clipboard, corrupting each other's pastes.
+    if not _acquire_single_instance():
+        logger.error("WhisperPaste is already running — exiting.")
+        sys.exit(1)
+
     engine = "whisper.cpp (GPU/Vulkan)" if config.USE_GPU else "faster-whisper (CPU)"
     refine_mode = " + Ollama refinement" if config.USE_REFINER else ""
     lang_info = (
@@ -307,9 +377,21 @@ def main():
     # Re-sync in case preload finished while the icon was being constructed.
     tray_icon.title = _startup_title
 
+    # Ctrl+C / console-close cannot cleanly unwind the native message pump, so
+    # route those events through our own clean shutdown instead.
+    try:
+        win32api.SetConsoleCtrlHandler(_console_ctrl_handler, True)
+    except Exception:
+        logger.exception("Failed to register console control handler")
+
     from power_monitor import PowerMonitor
     PowerMonitor(on_resume=on_resume)
-    tray_icon.run()
+    # Belt-and-braces: if a stray KeyboardInterrupt still surfaces from the
+    # pump, exit cleanly via the same shutdown path.
+    try:
+        tray_icon.run()
+    except KeyboardInterrupt:
+        _shutdown()
 
 
 if __name__ == "__main__":

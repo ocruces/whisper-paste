@@ -89,6 +89,7 @@ def reset_app_state(monkeypatch):
     app.processing = False
     app.tray_icon = None
     app._record_timer = None
+    app._shutting_down = False
     FakeTimer.instances.clear()
     # Never let a real Timer/Thread leak from a test that forgets to patch.
     monkeypatch.setattr(app.threading, "Timer", FakeTimer)
@@ -96,7 +97,18 @@ def reset_app_state(monkeypatch):
     app.processing = False
     app.tray_icon = None
     app._record_timer = None
+    app._shutting_down = False
     config.USE_REFINER = saved_refiner
+
+
+class FakeTrayIcon:
+    """Records stop() calls for shutdown tests."""
+
+    def __init__(self):
+        self.stop_calls = 0
+
+    def stop(self):
+        self.stop_calls += 1
 
 
 def _capture_tray(monkeypatch):
@@ -294,3 +306,91 @@ def test_no_audio_captured_resets_to_idle(monkeypatch):
     assert app.processing is False
     assert called["transcribe"] is False
     assert any(state == "idle" for state, _ in tips)
+
+
+# --------------------------------------------------------------------------- #
+# Shutdown (B1) — shared helper + console ctrl handler
+# --------------------------------------------------------------------------- #
+def test_shutdown_unhooks_and_stops_tray(monkeypatch):
+    unhooked = {"count": 0}
+    monkeypatch.setattr(app.keyboard, "unhook_all", lambda: unhooked.__setitem__("count", unhooked["count"] + 1))
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+
+    app._shutdown()
+
+    assert unhooked["count"] == 1
+    assert tray.stop_calls == 1
+
+
+def test_shutdown_safe_when_no_tray(monkeypatch):
+    unhooked = {"count": 0}
+    monkeypatch.setattr(app.keyboard, "unhook_all", lambda: unhooked.__setitem__("count", unhooked["count"] + 1))
+    app.tray_icon = None
+
+    # Must not raise when there is no tray icon.
+    app._shutdown()
+
+    assert unhooked["count"] == 1
+
+
+def test_shutdown_is_idempotent(monkeypatch):
+    unhooked = {"count": 0}
+    monkeypatch.setattr(app.keyboard, "unhook_all", lambda: unhooked.__setitem__("count", unhooked["count"] + 1))
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+
+    app._shutdown()
+    app._shutdown()  # second call is a no-op
+
+    assert unhooked["count"] == 1
+    assert tray.stop_calls == 1
+
+
+def test_console_ctrl_handler_shuts_down_on_ctrl_c(monkeypatch):
+    calls = {"shutdown": 0}
+    monkeypatch.setattr(app, "_shutdown", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
+
+    handled = app._console_ctrl_handler(app.win32con.CTRL_C_EVENT)
+
+    assert handled is True
+    assert calls["shutdown"] == 1
+
+
+def test_console_ctrl_handler_handles_close_event(monkeypatch):
+    calls = {"shutdown": 0}
+    monkeypatch.setattr(app, "_shutdown", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
+
+    handled = app._console_ctrl_handler(app.win32con.CTRL_CLOSE_EVENT)
+
+    assert handled is True
+    assert calls["shutdown"] == 1
+
+
+def test_console_ctrl_handler_ignores_unrelated_events(monkeypatch):
+    calls = {"shutdown": 0}
+    monkeypatch.setattr(app, "_shutdown", lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1))
+
+    # CTRL_LOGOFF_EVENT (5) is not one we handle.
+    handled = app._console_ctrl_handler(5)
+
+    assert handled is False
+    assert calls["shutdown"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Single instance (B2)
+# --------------------------------------------------------------------------- #
+def test_single_instance_acquires_when_first(monkeypatch):
+    monkeypatch.setattr(app.win32event, "CreateMutex", lambda a, b, name: "HANDLE")
+    monkeypatch.setattr(app.win32api, "GetLastError", lambda: 0)
+
+    assert app._acquire_single_instance() is True
+    assert app._single_instance_mutex == "HANDLE"
+
+
+def test_single_instance_rejects_when_already_running(monkeypatch):
+    monkeypatch.setattr(app.win32event, "CreateMutex", lambda a, b, name: "HANDLE")
+    monkeypatch.setattr(app.win32api, "GetLastError", lambda: app.winerror.ERROR_ALREADY_EXISTS)
+
+    assert app._acquire_single_instance() is False
