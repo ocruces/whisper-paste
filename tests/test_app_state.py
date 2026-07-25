@@ -394,3 +394,57 @@ def test_single_instance_rejects_when_already_running(monkeypatch):
     monkeypatch.setattr(app.win32api, "GetLastError", lambda: app.winerror.ERROR_ALREADY_EXISTS)
 
     assert app._acquire_single_instance() is False
+
+
+# --------------------------------------------------------------------------- #
+# Startup probe of the Ollama endpoint
+# --------------------------------------------------------------------------- #
+def _stub_preload(monkeypatch, probe_result):
+    """Neutralise the model load and record whether the Ollama probe ran."""
+    probes = []
+
+    def fake_probe():
+        probes.append(True)
+        return probe_result
+
+    monkeypatch.setattr(app.transcriber, "preload", lambda: None)
+    monkeypatch.setattr(app.refiner, "probe", fake_probe)
+    return probes
+
+
+def test_preload_probes_ollama_when_refinement_is_enabled(monkeypatch):
+    probes = _stub_preload(monkeypatch, (True, "Ollama 0.6.0 ready"))
+    config.USE_REFINER = True
+
+    app._preload_model()
+
+    assert probes == [True]
+
+
+def test_preload_skips_the_probe_without_refinement(monkeypatch):
+    probes = _stub_preload(monkeypatch, (True, "Ollama 0.6.0 ready"))
+    config.USE_REFINER = False
+
+    app._preload_model()
+
+    assert probes == []
+
+
+def test_failed_probe_does_not_break_startup(monkeypatch):
+    _stub_preload(monkeypatch, (False, "Ollama not reachable"))
+    config.USE_REFINER = True
+
+    # Must not raise: a missing Ollama degrades to raw transcripts, it is not fatal.
+    app._preload_model()
+
+
+def test_probe_exception_does_not_break_startup(monkeypatch):
+    monkeypatch.setattr(app.transcriber, "preload", lambda: None)
+
+    def boom():
+        raise RuntimeError("probe blew up")
+
+    monkeypatch.setattr(app.refiner, "probe", boom)
+    config.USE_REFINER = True
+
+    app._preload_model()

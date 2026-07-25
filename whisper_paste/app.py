@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 
 from whisper_paste import config
+from whisper_paste import refiner
 from whisper_paste import transcriber
 from whisper_paste.recorder import Recorder
 from whisper_paste.transcriber import transcribe
@@ -159,7 +160,10 @@ def process_recording():
             return
 
         raw_text = transcribe(audio)
-        logger.info("Raw transcript: %s", raw_text)
+        # Content only at DEBUG (--log-transcripts): the log file is durable and
+        # would otherwise accumulate everything ever dictated in plaintext.
+        logger.info("Transcript ready (%d chars).", len(raw_text))
+        logger.debug("Raw transcript: %s", raw_text)
 
         if not raw_text:
             logger.info("No speech detected.")
@@ -169,7 +173,8 @@ def process_recording():
         # Refine with LLM (only if --refine was passed)
         if config.USE_REFINER:
             cleaned_text = refine(raw_text)
-            logger.info("Refined text: %s", cleaned_text)
+            logger.info("Refined transcript (%d chars).", len(cleaned_text))
+            logger.debug("Refined text: %s", cleaned_text)
         else:
             cleaned_text = raw_text
 
@@ -266,10 +271,24 @@ def on_resume():
     logger.info("Resumed — tray icon and hotkey re-registered.")
 
 
+def _resolve_log_dir():
+    """Where the rotating log lives: config.LOG_DIR, else a private per-user dir.
+
+    Defaulting outside the repository is deliberate — a clone under a shared
+    path (e.g. C:\\data) inherits that location's ACL, and one under Documents or
+    Desktop gets swept into OneDrive folder backup. %LOCALAPPDATA% is neither.
+    No explicit DACL is set: that directory already inherits owner-only
+    permissions.
+    """
+    if config.LOG_DIR:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(config.LOG_DIR)))
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "WhisperPaste", "logs")
+
+
 def _setup_logging():
-    """Console + rotating file logging, with logs/ in the project root."""
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    log_dir = os.path.join(project_root, config.LOG_DIR)
+    """Console + rotating file logging in a private per-user directory."""
+    log_dir = _resolve_log_dir()
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "whisper-paste.log")
 
@@ -287,6 +306,14 @@ def _setup_logging():
     root.addHandler(console)
     root.addHandler(file_handler)
 
+    # Transcript content is logged at DEBUG. Raise only our own logger, never
+    # the root one — that would turn on debug output for faster_whisper,
+    # urllib3 and friends as well.
+    logging.getLogger("whisper-paste").setLevel(
+        logging.DEBUG if config.LOG_TRANSCRIPTS else logging.NOTSET
+    )
+    logger.info("Logging to %s", log_path)
+
 
 def _preload_model():
     """Load the whisper model in the background so the first dictation is fast."""
@@ -298,15 +325,28 @@ def _preload_model():
     except Exception as e:
         _startup_title = f"{_label()} — Model load error: {e}"
         logger.exception("Model preload failed (will retry on first use)")
+
+    if config.USE_REFINER:
+        # Surface a missing Ollama server / unpulled model now instead of
+        # silently pasting raw transcripts at the first dictation. This only
+        # detects misconfiguration — anything listening on the port can claim
+        # to be Ollama, which is why refiner.refine validates the response.
+        try:
+            ok, message = refiner.probe()
+        except Exception:
+            logger.exception("Ollama check failed")
+        else:
+            if ok:
+                logger.info("Ollama check: %s", message)
+            else:
+                logger.warning("Ollama check: %s", message)
     # The tray may not have been created yet when this runs; update_tray/title
     # guards for that, and main() re-syncs the title after creating the icon.
     if tray_icon is not None:
         tray_icon.title = _startup_title
 
 
-def main():
-    global tray_icon, _startup_title
-
+def _build_parser():
     parser = argparse.ArgumentParser(description="Voice Dictation Tool")
     parser.add_argument(
         "--refine", action="store_true",
@@ -328,15 +368,38 @@ def main():
         "--type", action="store_true",
         help="Type the text character-by-character instead of pasting via the clipboard.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--log-dir", type=str, default=None,
+        help="Directory for the rotating log file "
+             "(default: %%LOCALAPPDATA%%\\WhisperPaste\\logs).",
+    )
+    parser.add_argument(
+        "--log-transcripts", action="store_true",
+        help="Also write dictated text to the log. Off by default: the log is "
+             "durable, so this keeps a permanent plaintext record of everything "
+             "you dictate.",
+    )
+    return parser
 
+
+def _apply_args(args):
+    """Write parsed CLI flags into `config` before any other module reads it."""
     config.USE_REFINER = args.refine
     config.USE_GPU = args.gpu
     config.USE_CLIPBOARD = not args.type
+    config.LOG_TRANSCRIPTS = args.log_transcripts
+    if args.log_dir:
+        config.LOG_DIR = args.log_dir
     if args.lang:
         config.WHISPER_LANGUAGE = args.lang
     if args.model:
         config.WHISPER_MODEL = args.model
+
+
+def main():
+    global tray_icon, _startup_title
+
+    _apply_args(_build_parser().parse_args())
 
     _setup_logging()
 

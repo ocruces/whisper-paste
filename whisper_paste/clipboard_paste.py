@@ -16,6 +16,14 @@ def _type_text(text: str):
     keyboard.write(text, delay=0.04)
 
 
+def _restore(snap):
+    """Put the captured clipboard back, never raising — the paste already happened."""
+    try:
+        clipboard_win.restore(snap)
+    except Exception:
+        logger.warning("Clipboard restore failed", exc_info=True)
+
+
 def paste_text(text: str):
     """Output text at the current cursor position."""
     from whisper_paste import config
@@ -39,22 +47,22 @@ def paste_text(text: str):
             logger.warning(
                 "Clipboard set_text failed, restoring and typing instead", exc_info=True
             )
+            # Only restore what we actually captured: set_text may have failed
+            # before emptying the clipboard, and an empty restore would then
+            # destroy user data we never snapshotted.
             if snap is not None:
-                try:
-                    clipboard_win.restore(snap)
-                except Exception:
-                    logger.warning("Clipboard restore failed", exc_info=True)
+                _restore(snap)
             _type_text(text)
             return
 
-        time.sleep(0.1)  # let focus settle after the hotkey release
-        keyboard.send("ctrl+v")
-        time.sleep(config.CLIPBOARD_RESTORE_DELAY)  # let the target app read it
-
-        if snap is not None:
-            try:
-                clipboard_win.restore(snap)
-            except Exception:
-                logger.warning("Clipboard restore failed", exc_info=True)
+        try:
+            time.sleep(0.1)  # let focus settle after the hotkey release
+            keyboard.send("ctrl+v")
+            time.sleep(config.CLIPBOARD_RESTORE_DELAY)  # let the target app read it
+        finally:
+            # Always runs. The transcript is on the clipboard from here on, so
+            # even with no snapshot to put back we must clear it off rather than
+            # leave it readable by every process on the desktop.
+            _restore(snap if snap is not None else {})
     else:
         _type_text(text)

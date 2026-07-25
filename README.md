@@ -24,7 +24,7 @@ tray icon:   🟢 idle / ready       →  🔴 recording       →  🔵 process
 - **Auto-stop safety cap** — a forgotten recording is force-stopped and processed after 120 seconds.
 - **Sleep/resume recovery** — the global hotkey and tray icon are automatically re-registered after Windows suspends.
 - **Single-instance guard** — a second launch exits cleanly instead of racing the first on the hotkey and clipboard.
-- **Rotating file logs** at `logs/whisper-paste.log`.
+- **Rotating file logs** in a private per-user directory (`%LOCALAPPDATA%\WhisperPaste\logs`). **Dictated text is never written to them** unless you pass `--log-transcripts`.
 
 ## Requirements
 
@@ -79,8 +79,19 @@ Pass flags after `scripts\run.ps1` (or `python -m whisper_paste`). Defaults come
 | `--gpu` | Use the whisper.cpp / Vulkan backend instead of faster-whisper on CPU (see [GPU support](#gpu-support-amd--non-nvidia)). | off (CPU) |
 | `--refine` | Clean up the transcript with a local Ollama model (see [Text refinement](#text-refinement-optional)). | off |
 | `--type` | Type the text character-by-character instead of pasting via the clipboard (slower, never touches the clipboard). | off (clipboard paste) |
+| `--log-dir PATH` | Directory for the rotating log file. | `%LOCALAPPDATA%\WhisperPaste\logs` |
+| `--log-transcripts` | Also write dictated text to the log. See [Privacy](#privacy). | off |
 
 Flags can be combined, e.g. `scripts\run.ps1 --gpu --lang en --refine`.
+
+## Privacy
+
+Audio never leaves the machine: transcription is local, and `--refine` talks only to Ollama on `localhost`.
+
+- **Logs contain no dictated text.** The log records metadata (character counts, timings, errors), not what you said. `--log-transcripts` turns content logging on for debugging — it makes the log a permanent plaintext record of everything you dictate, so leave it off unless you need it, and delete the log afterwards.
+- **The log lives outside the repository**, in `%LOCALAPPDATA%\WhisperPaste\logs`. That keeps its file permissions from depending on where you cloned the project (a clone under a shared path such as `C:\data` inherits that location's ACL) and keeps it out of OneDrive folder backup.
+- **The transcript is cleared from the clipboard** after the paste, even when the pre-paste snapshot failed.
+- **Refiner output is validated** before it is pasted (see below).
 
 ## How it works
 
@@ -130,9 +141,15 @@ scripts\run.ps1 --refine
 
 The model (`gemma3:4b`) and endpoint (`http://localhost:11434`) are set in `whisper_paste/config.py` (`OLLAMA_MODEL`, `OLLAMA_URL`). If Ollama is unavailable, WhisperPaste logs a warning and pastes the raw transcript instead of failing.
 
+**Startup check.** With `--refine`, WhisperPaste queries the endpoint at startup and logs what it found — server version, and whether `OLLAMA_MODEL` is actually pulled. A stopped server or a missing model shows up immediately instead of silently degrading to raw transcripts at your first dictation. This detects misconfiguration; it does not authenticate the peer, since anything listening on the port can claim to be Ollama.
+
+**Output validation.** Ollama's API is unauthenticated and its reply is pasted at your cursor, so the response is checked before it is used. Blank lines, `- ` bullets, `1. ` numbered lists and tabs are all allowed — that formatting is the reason to run the refiner. Rejected are ANSI escapes and other control characters (which can rewrite a terminal's display or overwrite text once pasted), invisible bidi/zero-width characters, and absurdly long replies. Anything rejected falls back to the raw transcript.
+
+The prompt (`REFINER_PROMPT` in `config.py`) asks for paragraphs, bulleted and numbered lists, quotation marks, and normalised numbers/dates/units, and instructs the model to apply spoken commands like "new paragraph" or "question mark". It also tells the model that the dictated text is content to clean up, never an instruction to follow — so dictating "what is the capital of France" gets you that sentence, tidied, rather than an answer.
+
 ## Troubleshooting
 
-- **Logs:** the app logs to the console and to a rotating file at `logs/whisper-paste.log` (in the repo root). This is the first place to look, especially under `-NoConsole` where there's no terminal.
+- **Logs:** the app logs to the console and to a rotating file at `%LOCALAPPDATA%\WhisperPaste\logs\whisper-paste.log` (the resolved path is logged at startup; override with `--log-dir`). This is the first place to look, especially under `-NoConsole` where there's no terminal. Logs hold no dictated text unless you pass `--log-transcripts`, so they are safe to share.
 - **"WhisperPaste is already running — exiting."** The single-instance guard found another running copy. Quit the existing tray instance first (or check that a previous `-NoConsole` launch is still running).
 - **Microphone errors** are shown in the tray icon tooltip (hover over the icon), and the app stays idle so you can fix the mic and try again.
 

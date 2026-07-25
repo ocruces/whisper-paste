@@ -98,7 +98,7 @@ def test_typing_fallback_never_touches_clipboard(cp):
     assert ("write", "hello", 0.04) in events
 
 
-def test_snapshot_failure_still_pastes(cp, monkeypatch):
+def test_snapshot_failure_still_pastes_and_clears_the_transcript(cp, monkeypatch):
     clipboard_paste, fake_cw, fake_kb, events = cp
     config.USE_CLIPBOARD = True
     config.CLIPBOARD_RESTORE_DELAY = 0.3
@@ -112,8 +112,48 @@ def test_snapshot_failure_still_pastes(cp, monkeypatch):
 
     assert ("set_text", "hi") in events
     assert ("send", "ctrl+v") in events
-    # Nothing to restore when the snapshot never succeeded.
+    # There is nothing to put back, but our transcript must not be left sitting
+    # on the clipboard — an empty restore clears it.
+    assert ("restore", {}) in events
+
+
+def test_paste_failure_still_restores_the_clipboard(cp, monkeypatch):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = True
+    config.CLIPBOARD_RESTORE_DELAY = 0.3
+
+    def boom(k):
+        raise RuntimeError("send failed")
+
+    monkeypatch.setattr(fake_kb, "send", boom)
+
+    # The error still reaches app.process_recording, but not before the user's
+    # clipboard has been put back.
+    with pytest.raises(RuntimeError):
+        clipboard_paste.paste_text("hi")
+
+    assert ("restore", {"snap": 1}) in events
+
+
+def test_set_text_failure_without_snapshot_leaves_clipboard_alone(cp, monkeypatch):
+    clipboard_paste, fake_cw, fake_kb, events = cp
+    config.USE_CLIPBOARD = True
+
+    def boom_snapshot():
+        raise RuntimeError("clipboard busy")
+
+    def boom_set(t):
+        raise RuntimeError("clipboard busy")
+
+    monkeypatch.setattr(fake_cw, "snapshot", boom_snapshot)
+    monkeypatch.setattr(fake_cw, "set_text", boom_set)
+
+    clipboard_paste.paste_text("hi")
+
+    # set_text may have failed before it emptied the clipboard, so restoring an
+    # empty snapshot here would destroy data we never captured.
     assert "restore" not in [e[0] for e in events]
+    assert ("write", "hi", 0.04) in events
 
 
 def test_restore_failure_does_not_raise(cp, monkeypatch):
