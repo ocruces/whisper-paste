@@ -75,12 +75,14 @@ Pass flags after `scripts\run.ps1` (or `python -m whisper_paste`). Defaults come
 | Flag | Effect | Default |
 |------|--------|---------|
 | `--model NAME` | Whisper model to load (`tiny`, `base`, `small`, `medium`, `large-v3`, `distil-small.en`, …). | `small` |
-| `--lang CODE` | **Forces** the transcription language (e.g. `en`, `es`, `fr`) — audio is transcribed as this language regardless of what is spoken. | auto-detect |
+| `--lang CODE` | **Forces** the transcription language (e.g. `en`, `es`, `fr`) — audio is transcribed as this language regardless of what is spoken, and Whisper skips its language-detection pass. | auto-detect |
 | `--gpu` | Use the whisper.cpp / Vulkan backend instead of faster-whisper on CPU (see [GPU support](#gpu-support-amd--non-nvidia)). | off (CPU) |
 | `--refine` | Clean up the transcript with a local Ollama model (see [Text refinement](#text-refinement-optional)). | off |
 | `--type` | Type the text character-by-character instead of pasting via the clipboard (slower, never touches the clipboard). | off (clipboard paste) |
 | `--log-dir PATH` | Directory for the rotating log file. | `%LOCALAPPDATA%\WhisperPaste\logs` |
 | `--log-transcripts` | Also write dictated text to the log. See [Privacy](#privacy). | off |
+
+**Tip: pass `--lang` if you always dictate in the same language.** With auto-detect (the default), Whisper first runs a language-detection pass over the beginning of every recording, then transcribes it. Setting `--lang en` skips that pass, so each dictation is transcribed sooner. The trade-off is that the language you set is applied to whatever you say, so leave it off only if you actually switch languages between dictations.
 
 Flags can be combined, e.g. `scripts\run.ps1 --gpu --lang en --refine`.
 

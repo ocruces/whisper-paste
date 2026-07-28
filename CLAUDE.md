@@ -46,6 +46,12 @@ The flow is: hotkey toggles `recorder` between idle→recording, then on the sec
 
 Separately, `main()` spawns `_preload_model` on a daemon thread at startup: it calls `transcriber.preload()` (load + warm-up transcription) so the first real dictation isn't slow, and updates the tray title to reflect load progress / errors.
 
+### Tray titles are a fixed-size Win32 field
+
+`pystray` writes `Icon.title` into `NOTIFYICONDATAW.szTip`, a `WCHAR[128]` ctypes array, so an over-long title raises `ValueError` out of the *assignment*. Several tray titles interpolate exception text of unbounded length, which is why every one of them goes through `_fit_tooltip` — it clamps to `_MAX_TOOLTIP` (127, leaving room for the terminating NUL) measured in **UTF-16 code units, not code points**, and collapses whitespace. Don't raise that cap to 128: ctypes accepts 128 but then hands Shell_NotifyIcon an unterminated string.
+
+`update_tray` and `_set_tray_title` additionally **never raise**. That is load-bearing, not defensive habit: `_begin_processing` sets `processing = True` before it touches the tray, so an exception there would strand the flag `True` and silently ignore every later hotkey press; and `on_hotkey`'s mic-failure handler runs inside keyboard's low-level hook, where an escaping exception makes the library fall through to `CallNextHookEx` — defeating `suppress=True` and leaking the raw hotkey into the focused app. That combination is what produced the 2026-07-27 crash. Keep error tooltips short and put the detail in `logger.exception` instead.
+
 ### Config module is mutated at startup
 
 `config.py` holds defaults as module-level globals (`USE_GPU`, `USE_REFINER`, `USE_CLIPBOARD`, `WHISPER_LANGUAGE`, `LOG_DIR`, `LOG_TRANSCRIPTS`). `main()` calls `_apply_args(_build_parser().parse_args())`, which **writes** to those attributes before any other module reads them (the parser and the apply step are split out so `tests/test_cli.py` can exercise flag→config wiring without starting the tray). Other modules then `from whisper_paste import config` (a module reference) and read attributes at call time (not at import time) — that's why e.g. `clipboard_paste.py` does `from whisper_paste import config` inside the function. Don't replace this with `from whisper_paste.config import USE_GPU` (binding the value) at module top, or CLI flags will silently stop working. Immutable settings that are never CLI-mutated (e.g. `SAMPLE_RATE`, `OLLAMA_URL`) are still value-imported directly, which is fine.

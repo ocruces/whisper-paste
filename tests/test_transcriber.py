@@ -100,6 +100,32 @@ def test_whisper_cpp_branch(monkeypatch):
     assert calls["kwargs"].get("language") == "fr"
 
 
+def test_whisper_cpp_auto_detects_when_language_unset(monkeypatch):
+    """No --lang must mean auto-detect on whisper.cpp too, not its 'en' default.
+
+    whisper.cpp's own default for params.language is "en", so omitting the kwarg
+    silently forces English. Passing "" is what makes it run language detection
+    (it rejects "auto"), matching the faster-whisper branch's language=None.
+    """
+    config.USE_GPU = True
+    config.WHISPER_LANGUAGE = None
+    calls = {}
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def transcribe(self, media, **kwargs):
+            calls["kwargs"] = kwargs
+            return [_Seg("hola")]
+
+    _install_whisper_cpp(monkeypatch, FakeModel)
+
+    transcriber.transcribe(np.zeros(10, dtype=np.float32))
+
+    assert calls["kwargs"].get("language") == ""
+
+
 def test_model_loaded_exactly_once_under_concurrency(monkeypatch):
     config.USE_GPU = False
     config.WHISPER_LANGUAGE = None

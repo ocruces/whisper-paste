@@ -6,6 +6,8 @@ its collaborators (`transcribe`, `paste_text`, `refine`, `recorder`,
 `update_tray`) plus `threading.Thread`/`threading.Timer` per test.
 """
 
+import ctypes
+
 import pytest
 
 from whisper_paste import app
@@ -102,13 +104,61 @@ def reset_app_state(monkeypatch):
 
 
 class FakeTrayIcon:
-    """Records stop() calls for shutdown tests."""
+    """Records stop() calls; its title setter enforces the real szTip limit.
+
+    pystray writes Icon.title into NOTIFYICONDATAW.szTip, a WCHAR[128] ctypes
+    array, so an over-long title raises out of the assignment. Reproducing that
+    against the real ctypes array rather than a length check of our own keeps
+    the test honest about what Windows actually accepts.
+    """
+
+    def __init__(self):
+        self.stop_calls = 0
+        self.icon = None
+        self._title = None
+
+    @property
+    def title(self):
+        return self._title
+
+    @title.setter
+    def title(self, value):
+        (ctypes.c_wchar * 128)().value = value
+        self._title = value
+
+    def stop(self):
+        self.stop_calls += 1
+
+
+class ExplodingTrayIcon:
+    """Tray whose every update fails — e.g. Shell_NotifyIcon after an explorer restart."""
 
     def __init__(self):
         self.stop_calls = 0
 
+    @property
+    def icon(self):
+        return None
+
+    @icon.setter
+    def icon(self, value):
+        raise RuntimeError("Shell_NotifyIcon failed")
+
+    @property
+    def title(self):
+        return None
+
+    @title.setter
+    def title(self, value):
+        raise RuntimeError("Shell_NotifyIcon failed")
+
     def stop(self):
         self.stop_calls += 1
+
+
+def _title_units(text):
+    """Length of a tray title in UTF-16 code units — the unit szTip counts in."""
+    return len(text.encode("utf-16-le")) // 2
 
 
 def _capture_tray(monkeypatch):
@@ -196,7 +246,8 @@ def test_mic_error_stays_idle_and_recovers(monkeypatch):
     assert rec.is_recording is False
     assert rec.stop_calls == 0
     assert any(
-        state == "idle" and tooltip and "Mic error" in tooltip for state, tooltip in tips
+        state == "idle" and tooltip and "Mic unavailable" in tooltip
+        for state, tooltip in tips
     )
 
     # Next press works normally once the mic recovers.
@@ -204,6 +255,32 @@ def test_mic_error_stays_idle_and_recovers(monkeypatch):
     app.on_hotkey()
     assert rec.is_recording is True
     assert rec.start_calls == 2
+
+
+# Verbatim from the 2026-07-27 log. Wrapped in a tooltip this overflowed
+# NOTIFYICONDATAW.szTip (137 UTF-16 units against a 128-unit array).
+PORTAUDIO_ERROR = (
+    "Error opening InputStream: Unanticipated host error [PaErrorCode -9999]: "
+    "'Undefined external error.' [MME error 1]"
+)
+
+
+def test_hotkey_survives_a_long_mic_error(monkeypatch):
+    """A mic error too long for szTip must not escape on_hotkey.
+
+    Regression: the ValueError raised by the tooltip assignment replaced the
+    original error and escaped into keyboard's low-level hook, which caught it
+    and called CallNextHookEx anyway — defeating suppress=True and leaking the
+    raw hotkey into the focused app. Uses the real update_tray on purpose.
+    """
+    rec = FakeRecorder(start_error=RuntimeError(PORTAUDIO_ERROR))
+    monkeypatch.setattr(app, "recorder", rec)
+    app.tray_icon = FakeTrayIcon()
+
+    app.on_hotkey()
+
+    assert app.processing is False
+    assert rec.is_recording is False
 
 
 def test_auto_stop_timer_fires_exactly_once(monkeypatch):
@@ -448,3 +525,141 @@ def test_probe_exception_does_not_break_startup(monkeypatch):
     config.USE_REFINER = True
 
     app._preload_model()
+
+
+# --------------------------------------------------------------------------- #
+# Tray tooltips — NOTIFYICONDATAW.szTip is a WCHAR[128]
+#
+# These exercise the real update_tray (not the _capture_tray stub): the whole
+# point is what reaches the tray icon's title setter.
+# --------------------------------------------------------------------------- #
+def test_update_tray_clamps_an_over_long_tooltip():
+    """Any tooltip, whatever its source, must fit szTip."""
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+
+    app.update_tray("idle", tooltip="x" * 200)
+
+    assert _title_units(tray.title) <= 127
+
+
+def test_fit_tooltip_measures_utf16_units_not_code_points():
+    """szTip counts UTF-16 units, so astral characters cost two apiece.
+
+    100 emoji are only 100 code points but 200 units — a code-point-based clamp
+    lets them straight through into a 128-unit array.
+    """
+    fitted = app._fit_tooltip("\U0001F600" * 100)
+
+    # The real contract: this is the assignment pystray performs.
+    (ctypes.c_wchar * 128)().value = fitted
+    # And truncating mid-pair would leave an unencodable lone surrogate.
+    assert fitted.encode("utf-16-le").decode("utf-16-le") == fitted
+
+
+def test_fit_tooltip_collapses_whitespace():
+    """Exception messages routinely span lines; szTip renders them badly."""
+    assert app._fit_tooltip("Error: failed\n  at line 2\n") == "Error: failed at line 2"
+
+
+@pytest.mark.parametrize("size", [0, 126, 127, 128, 129, 500])
+def test_fit_tooltip_leaves_room_for_the_terminator(size):
+    """Guard on the off-by-one: ctypes takes 128 units, Win32 wants a NUL too.
+
+    128 would satisfy the ctypes assignment and still hand Shell_NotifyIcon an
+    unterminated szTip, so the cap is 127 — easy to 'tidy' back to 128.
+    """
+    fitted = app._fit_tooltip("x" * size)
+
+    assert _title_units(fitted) <= 127
+    assert _title_units(fitted) == min(size, 127)
+
+
+def test_begin_processing_survives_a_failing_tray(monkeypatch):
+    """A cosmetic tray failure must not wedge the state machine.
+
+    _begin_processing sets processing = True before touching the tray, so an
+    exception there would strand it True forever and every later hotkey press
+    would be silently ignored. Shell_NotifyIcon can fail for reasons other than
+    length — an explorer.exe restart, for one.
+    """
+    rec = FakeRecorder(audio="AUDIO")
+    rec._recording = True
+    monkeypatch.setattr(app, "recorder", rec)
+    monkeypatch.setattr(app.threading, "Thread", NullThread)
+    app.tray_icon = ExplodingTrayIcon()
+    app._start_record_timer()
+    timer = FakeTimer.instances[-1]
+
+    app._begin_processing()
+
+    # The transition completed: worker handed off and the safety-cap cancelled.
+    assert timer.cancelled is True
+    assert app.processing is True  # NullThread never runs, so it stays in flight
+
+
+def test_update_tray_survives_a_failing_tray():
+    """update_tray itself never raises — callers hold _state_lock."""
+    app.tray_icon = ExplodingTrayIcon()
+
+    app.update_tray("idle")
+
+
+def test_idle_tooltip_honours_refiner_and_hotkey(monkeypatch):
+    """The idle title is built from config, not from a frozen string."""
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+    monkeypatch.setattr(config, "USE_REFINER", True)
+    monkeypatch.setattr(config, "HOTKEY", "ctrl+alt+d")
+
+    app.update_tray("idle")
+
+    assert tray.title == "Dictation+LLM — Ready (ctrl+alt+d)"
+
+
+def test_preload_survives_a_long_model_error(monkeypatch):
+    """A long model-load error must not kill the preload thread.
+
+    It would otherwise die on the title assignment, stranding the tray on
+    "Loading model…" with no indication that anything went wrong.
+    """
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+    monkeypatch.setattr(config, "USE_REFINER", False)
+
+    def boom():
+        raise RuntimeError("could not load model: " + "detail " * 40)
+
+    monkeypatch.setattr(app.transcriber, "preload", boom)
+
+    app._preload_model()
+
+    assert _title_units(app._startup_title) <= 127
+    assert "Model load error" in tray.title
+
+
+def test_processing_error_tooltip_is_clamped(monkeypatch):
+    """Regression guard for the worker path.
+
+    Not a driver — the clamp in update_tray already covers this. It pins the
+    behaviour so a later edit cannot reintroduce the crash here, where it would
+    kill the worker thread and strand the tray on the processing icon.
+    """
+    rec = FakeRecorder(audio="AUDIO")
+    rec._recording = True
+    monkeypatch.setattr(app, "recorder", rec)
+    monkeypatch.setattr(app.threading, "Thread", SyncThread)
+    monkeypatch.setattr(config, "USE_REFINER", False)
+    monkeypatch.setattr(app, "paste_text", lambda text: None)
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+
+    def boom(audio):
+        raise RuntimeError("transcription failed: " + "detail " * 40)
+
+    monkeypatch.setattr(app, "transcribe", boom)
+
+    app.on_hotkey()
+
+    assert app.processing is False
+    assert _title_units(tray.title) <= 127

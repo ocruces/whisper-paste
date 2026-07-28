@@ -50,10 +50,12 @@ def transcribe(audio) -> str:
 
     if _backend == "whisper.cpp":
         # pywhispercpp's Model.transcribe accepts a float32 numpy array directly.
-        kwargs = {}
-        if config.WHISPER_LANGUAGE:
-            kwargs["language"] = config.WHISPER_LANGUAGE
-        segments = model.transcribe(audio, **kwargs)
+        # "" means auto-detect, matching the faster-whisper branch's language=None.
+        # It has to be passed explicitly: whisper.cpp defaults params.language to
+        # "en", so omitting the kwarg silently forces English instead of detecting.
+        # "auto" is not usable here — whisper_lang_id() doesn't know it, and the
+        # binding's setter drops it, leaving "" behind anyway.
+        segments = model.transcribe(audio, language=config.WHISPER_LANGUAGE or "")
         text = " ".join(seg.text.strip() for seg in segments)
     else:
         # faster-whisper accepts numpy arrays natively.

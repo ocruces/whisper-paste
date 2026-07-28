@@ -71,19 +71,62 @@ def _idle_title():
     return f"{_label()} — Ready ({config.HOTKEY})"
 
 
+# NOTIFYICONDATAW.szTip is a WCHAR[128] including the terminating NUL, so 127
+# units are usable. pystray assigns Icon.title straight into that ctypes array,
+# and these titles carry exception text of unbounded length.
+_MAX_TOOLTIP = 127
+
+
+def _fit_tooltip(text):
+    """Clamp a tray tooltip to what NOTIFYICONDATAW.szTip can hold.
+
+    Measured in UTF-16 code units, not code points — an astral character such as
+    an emoji costs two of the 127.
+    """
+    units = " ".join(str(text).split()).encode("utf-16-le", "replace")
+    if len(units) <= _MAX_TOOLTIP * 2:
+        return units.decode("utf-16-le")
+    cut = units[: (_MAX_TOOLTIP - 1) * 2]
+    # Never split a surrogate pair — a lone high surrogate will not decode.
+    if 0xD800 <= int.from_bytes(cut[-2:], "little") <= 0xDBFF:
+        cut = cut[:-2]
+    return cut.decode("utf-16-le") + "…"
+
+
+def _set_tray_title(text):
+    """Assign a tray title defensively. Never raises.
+
+    The tray is cosmetic, but its callers are not: they hold ``_state_lock``, or
+    sit between ``processing = True`` and the worker launch, or run inside an
+    ``except`` block whose escape would reach the keyboard hook. A failed
+    Shell_NotifyIcon (an explorer.exe restart, say) must not become their
+    problem.
+    """
+    if tray_icon is None:
+        return
+    try:
+        tray_icon.title = _fit_tooltip(text)
+    except Exception:
+        logger.exception("Failed to update tray title")
+
+
 def update_tray(state, tooltip=None):
-    """Update the tray icon appearance."""
+    """Update the tray icon appearance. Never raises (see _set_tray_title)."""
     if tray_icon is None:
         return
     if state == "idle":
-        tray_icon.icon = ICON_IDLE
-        tray_icon.title = tooltip or "Dictation — Ready (Ctrl+Shift+Space)"
+        icon, title = ICON_IDLE, _idle_title()
     elif state == "recording":
-        tray_icon.icon = ICON_RECORDING
-        tray_icon.title = tooltip or "Dictation — Recording..."
+        icon, title = ICON_RECORDING, f"{_label()} — Recording..."
     elif state == "processing":
-        tray_icon.icon = ICON_PROCESSING
-        tray_icon.title = tooltip or "Dictation — Processing..."
+        icon, title = ICON_PROCESSING, f"{_label()} — Processing..."
+    else:
+        return
+    try:
+        tray_icon.icon = icon
+    except Exception:
+        logger.exception("Failed to update tray icon")
+    _set_tray_title(tooltip or title)
 
 
 def _start_record_timer():
@@ -138,9 +181,12 @@ def on_hotkey():
             # Start recording. A mic failure must leave us cleanly idle.
             try:
                 recorder.start()
-            except Exception as e:
+            except Exception:
+                # Short, actionable text only: the tooltip goes into a fixed-size
+                # Win32 field (see _fit_tooltip) and logger.exception above has
+                # already recorded the full traceback.
                 logger.exception("Failed to start recording")
-                update_tray("idle", tooltip=f"Dictation — Mic error: {e}")
+                update_tray("idle", tooltip=f"{_label()} — Mic unavailable (in use?). Ready.")
                 return
             _start_record_timer()
             update_tray("recording")
@@ -185,7 +231,7 @@ def process_recording():
 
     except Exception as e:
         logger.exception("Error during processing")
-        update_tray("idle", tooltip=f"Dictation — Error: {e} (Ready)")
+        update_tray("idle", tooltip=f"{_label()} — Error: {e} (Ready)")
     finally:
         processing = False
 
@@ -323,7 +369,7 @@ def _preload_model():
         _startup_title = _idle_title()
         logger.info("Model preloaded and ready.")
     except Exception as e:
-        _startup_title = f"{_label()} — Model load error: {e}"
+        _startup_title = _fit_tooltip(f"{_label()} — Model load error: {e}")
         logger.exception("Model preload failed (will retry on first use)")
 
     if config.USE_REFINER:
@@ -340,10 +386,9 @@ def _preload_model():
                 logger.info("Ollama check: %s", message)
             else:
                 logger.warning("Ollama check: %s", message)
-    # The tray may not have been created yet when this runs; update_tray/title
+    # The tray may not have been created yet when this runs; _set_tray_title
     # guards for that, and main() re-syncs the title after creating the icon.
-    if tray_icon is not None:
-        tray_icon.title = _startup_title
+    _set_tray_title(_startup_title)
 
 
 def _build_parser():
@@ -438,7 +483,7 @@ def main():
         menu=Menu(MenuItem("Quit", on_quit)),
     )
     # Re-sync in case preload finished while the icon was being constructed.
-    tray_icon.title = _startup_title
+    _set_tray_title(_startup_title)
 
     # Ctrl+C / console-close cannot cleanly unwind the native message pump, so
     # route those events through our own clean shutdown instead.
