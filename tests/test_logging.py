@@ -154,3 +154,55 @@ def test_setup_logging_writes_into_the_resolved_directory(monkeypatch, tmp_path)
     logging.getLogger("whisper-paste").info("hello")
 
     assert (log_dir / "whisper-paste.log").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Windowed process (pythonw.exe / PyInstaller --windowed): sys.stderr is None
+#
+# A StreamHandler built on a None stream does not crash — emit() raises
+# AttributeError and Handler.handleError checks `if raiseExceptions and
+# sys.stderr:`, sees None and returns. Every record would then be discarded
+# silently, so the handler must not be created at all.
+# --------------------------------------------------------------------------- #
+def _console_handlers(root):
+    """Plain StreamHandlers only.
+
+    `type(...) is` and NOT isinstance: RotatingFileHandler -> FileHandler ->
+    StreamHandler, so an isinstance check matches the file handler too and the
+    assertions below would pass vacuously.
+    """
+    return [h for h in root.handlers if type(h) is logging.StreamHandler]
+
+
+def test_no_console_handler_when_stderr_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", False)
+    monkeypatch.setattr(app.sys, "stderr", None)
+
+    app._setup_logging()
+
+    assert _console_handlers(logging.getLogger()) == []
+
+
+def test_log_file_is_still_written_when_stderr_is_missing(monkeypatch, tmp_path):
+    """The rotating file is the real log — it must survive losing the console."""
+    log_dir = tmp_path / "nested"
+    monkeypatch.setattr(config, "LOG_DIR", str(log_dir))
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", False)
+    monkeypatch.setattr(app.sys, "stderr", None)
+
+    app._setup_logging()
+    logging.getLogger("whisper-paste").info("hello from a windowed process")
+
+    log_file = log_dir / "whisper-paste.log"
+    assert log_file.exists()
+    assert "hello from a windowed process" in log_file.read_text(encoding="utf-8")
+
+
+def test_console_handler_is_added_when_stderr_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", False)
+
+    app._setup_logging()
+
+    assert len(_console_handlers(logging.getLogger())) == 1

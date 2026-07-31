@@ -1,0 +1,73 @@
+# Frozen dependency set for the portable ZIP build (scripts\build.ps1).
+#
+# This is NOT requirements.txt. requirements.txt lists what a source install
+# needs, unpinned, so a developer gets current versions. This file is the exact
+# transitive closure that was measured to produce a working frozen build, so a
+# ZIP rebuilt in six months is the same ZIP.
+#
+# BUILD_PYTHON = 3.11
+# (on its own line, in that exact form, so scripts\build.ps1 can grep it out
+# rather than hard-coding the interpreter version in two places. Verified on
+# 3.11.4. PyInstaller bundles the interpreter it was run with, so building on a
+# different minor version silently ships a different Python to every user.)
+#
+# How this file was generated:
+#
+#   py -3.11 -m venv .venv-pin
+#   .venv-pin\Scripts\pip install -r requirements.txt pyinstaller
+#   .venv-pin\Scripts\pip freeze          # NOT --all: pip/setuptools/wheel are
+#                                         # venv plumbing, not build inputs, and
+#                                         # pinning them fights the venv module
+#
+# Regenerating means redoing that procedure end to end and replacing the whole
+# list. Do not bump a single line by hand: these are transitive pins, so raising
+# e.g. faster-whisper without re-resolving leaves tokenizers/ctranslate2/av at
+# versions its new metadata never asked for, and the set drifts out of the
+# combination that was actually tested.
+#
+# pywhispercpp is deliberately absent. --gpu needs it rebuilt locally with
+# GGML_VULKAN=1 (the PyPI wheel is CPU-only), which cannot be shipped as a
+# prebuilt binary, so --gpu is a source-install-only feature and the portable
+# build rejects the flag outright. packaging\whisper-paste.spec also names it in
+# `excludes`; both are on purpose, see the comment there.
+#
+# --only-binary :all: is used at install time: a source distribution slipping in
+# would build against whatever compiler this machine happens to have, which is
+# the opposite of a reproducible input.
+altgraph==0.17.5
+anyio==4.14.2
+av==18.0.0
+certifi==2026.7.22
+cffi==2.1.0
+click==8.4.2
+colorama==0.4.6
+ctranslate2==4.8.1
+faster-whisper==1.2.1
+filelock==3.32.2
+flatbuffers==25.12.19
+fsspec==2026.7.0
+h11==0.16.0
+hf-xet==1.5.2
+httpcore==1.0.9
+httpx==0.28.1
+huggingface_hub==1.26.0
+idna==3.18
+keyboard==0.13.5
+numpy==2.4.6
+onnxruntime==1.28.0
+packaging==26.2
+pefile==2024.8.26
+pillow==12.3.0
+protobuf==7.35.1
+pycparser==3.0
+pyinstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6
+pystray==0.19.5
+pywin32==312
+pywin32-ctypes==0.2.3
+PyYAML==6.0.3
+six==1.17.0
+sounddevice==0.5.5
+tokenizers==0.23.1
+tqdm==4.70.0
+typing_extensions==4.16.0

@@ -5,6 +5,7 @@ import threading
 
 import numpy as np
 
+from whisper_paste import bundle
 from whisper_paste import config
 
 logger = logging.getLogger(__name__)
@@ -12,6 +13,23 @@ logger = logging.getLogger(__name__)
 _model = None
 _backend = None
 _model_lock = threading.Lock()
+
+
+def _resolve_faster_whisper_model():
+    """What to hand WhisperModel: a bundled directory, else the configured name.
+
+    `config.WHISPER_MODEL` is read here, at call time, not at import time —
+    `main()` rewrites config attributes from the CLI after this module is
+    imported (see CLAUDE.md, "Config module is mutated at startup").
+
+    Returning a directory is legitimate: faster_whisper's WhisperModel checks
+    `os.path.isdir(model_size_or_path)` before falling back to
+    `download_model()`, so a bundled model dir short-circuits the HuggingFace
+    download. When nothing shipped for this name, the bare name goes through
+    unchanged and downloads as usual.
+    """
+    name = config.WHISPER_MODEL
+    return bundle.bundled_model_dir(name) or name
 
 
 def _get_model():
@@ -28,6 +46,15 @@ def _get_model():
 
         if config.USE_GPU:
             _backend = "whisper.cpp"
+            # Reject --gpu here, *before* importing pywhispercpp: the portable
+            # build ships no Vulkan-enabled pywhispercpp, so the import would
+            # fail with a bare ModuleNotFoundError. This is the one chokepoint
+            # every transcription path crosses, so raising a RuntimeError with
+            # an actionable message means it reaches the user as a tray tooltip
+            # via _preload_model in app.py. Keep the check above the import.
+            if bundle.is_frozen():
+                raise RuntimeError(bundle.GPU_UNSUPPORTED_MESSAGE)
+
             from pywhispercpp.model import Model
 
             logger.info("Loading whisper.cpp model '%s' (GPU/Vulkan)...", config.WHISPER_MODEL)
@@ -37,8 +64,10 @@ def _get_model():
             _backend = "faster-whisper"
             from faster_whisper import WhisperModel
 
-            logger.info("Loading faster-whisper model '%s' on CPU...", config.WHISPER_MODEL)
-            _model = WhisperModel(config.WHISPER_MODEL, device="cpu", compute_type="int8")
+            # A bundled model directory when one shipped, else the bare name.
+            model_ref = _resolve_faster_whisper_model()
+            logger.info("Loading faster-whisper model '%s' on CPU...", model_ref)
+            _model = WhisperModel(model_ref, device="cpu", compute_type="int8")
             logger.info("faster-whisper model loaded.")
 
     return _model

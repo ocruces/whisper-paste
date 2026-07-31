@@ -1,6 +1,7 @@
 """Voice Dictation Tool — Main application with system tray and global hotkey."""
 
 import argparse
+import io
 import logging
 import os
 import sys
@@ -10,13 +11,16 @@ from logging.handlers import RotatingFileHandler
 import keyboard
 import win32api
 import win32con
+import win32console
 import win32event
 import winerror
 from PIL import Image, ImageDraw
 from pystray import Icon, Menu, MenuItem
 
+from whisper_paste import bundle
 from whisper_paste import config
 from whisper_paste import refiner
+from whisper_paste import settings
 from whisper_paste import transcriber
 from whisper_paste.recorder import Recorder
 from whisper_paste.transcriber import transcribe
@@ -50,17 +54,67 @@ _single_instance_mutex = None
 _shutting_down = False
 
 
-def create_icon_image(color):
-    """Create a simple colored circle icon."""
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+# The three tray states, as module-level constants so the packaging script (and
+# its test) can import the exact colour instead of repeating the literal.
+COLOR_IDLE = (40, 180, 80, 255)         # green = idle/ready
+COLOR_RECORDING = (220, 40, 40, 255)    # red = recording
+COLOR_PROCESSING = (40, 120, 220, 255)  # blue = processing
+
+
+def create_icon_image(color, size=64):
+    """Create a simple colored circle icon.
+
+    ``size`` exists so the packaging script can render this same artwork at
+    256x256 for the exe's .ico — the exe icon and the tray icon must be one
+    drawing, not two that drift apart. The geometry is therefore proportional;
+    at the default size=64 it is byte-identical to the original fixed
+    ``[8, 8, 56, 56]`` / ``width=2``.
+    """
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse([8, 8, 56, 56], fill=color, outline=(255, 255, 255, 200), width=2)
+    inset = size / 8
+    width = max(2, size // 32)
+    draw.ellipse(
+        [inset, inset, size - inset, size - inset],
+        fill=color, outline=(255, 255, 255, 200), width=width,
+    )
     return img
 
 
-ICON_IDLE = create_icon_image((40, 180, 80, 255))         # green = idle/ready
-ICON_RECORDING = create_icon_image((220, 40, 40, 255))    # red = recording
-ICON_PROCESSING = create_icon_image((40, 120, 220, 255))  # blue = processing
+ICON_IDLE = create_icon_image(COLOR_IDLE)
+ICON_RECORDING = create_icon_image(COLOR_RECORDING)
+ICON_PROCESSING = create_icon_image(COLOR_PROCESSING)
+
+
+def _message_box(text, title="WhisperPaste"):
+    """Show a modal error dialog. Never raises.
+
+    This is the only user-visible channel that exists before the tray is up and
+    when there is no console at all (``--windowed`` / ``pythonw.exe``, where
+    ``sys.stdout`` and ``sys.stderr`` are both None). Every caller is already on
+    an error path — losing the dialog must not also lose the exit code or the
+    exception being reported — so it swallows failures the same way
+    ``_set_tray_title`` does (see CLAUDE.md).
+    """
+    try:
+        win32api.MessageBox(0, str(text), title,
+                            win32con.MB_OK | win32con.MB_ICONERROR)
+    except Exception:
+        logger.exception("Failed to show message box")
+
+
+def _has_console():
+    """True when this process owns a console window.
+
+    Used to skip SetConsoleCtrlHandler in a windowed build. The call is already
+    wrapped in try/except, but without this gate it fails on *every* windowed
+    launch and writes a full traceback into the log that maintainers will chase
+    for nothing.
+    """
+    try:
+        return win32console.GetConsoleWindow() != 0
+    except Exception:
+        return False
 
 
 def _label():
@@ -339,8 +393,6 @@ def _setup_logging():
     log_path = os.path.join(log_dir, "whisper-paste.log")
 
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    console = logging.StreamHandler()
-    console.setFormatter(fmt)
     file_handler = RotatingFileHandler(
         log_path, maxBytes=500_000, backupCount=2, encoding="utf-8"
     )
@@ -349,8 +401,20 @@ def _setup_logging():
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.handlers.clear()
-    root.addHandler(console)
+    # The rotating file is the real log either way, so it is always added.
     root.addHandler(file_handler)
+
+    # No console handler in a windowed process (--windowed / pythonw.exe), where
+    # sys.stderr is None. Adding one anyway would not crash and would not warn:
+    # StreamHandler(stream=None) binds self.stream = None, emit() then raises
+    # AttributeError, and Handler.handleError checks `if raiseExceptions and
+    # sys.stderr:` — sees None and returns silently. Every record would be
+    # discarded without a trace inside an exception handler, which is strictly
+    # worse than failing loudly. So we do not create the handler at all.
+    if sys.stderr is not None:
+        console = logging.StreamHandler()
+        console.setFormatter(fmt)
+        root.addHandler(console)
 
     # Transcript content is logged at DEBUG. Raise only our own logger, never
     # the root one — that would turn on debug output for faster_whisper,
@@ -392,14 +456,27 @@ def _preload_model():
 
 
 def _build_parser():
+    # Every store_true flag carries default=None, not argparse's implicit False.
+    # That is what makes "the user did not pass --refine" distinguishable from
+    # "the user passed --refine and it is False" — without it, _apply_args would
+    # write False over a `refine = true` coming from the settings file and the
+    # documented precedence (defaults < ini < CLI) would silently invert.
     parser = argparse.ArgumentParser(description="Voice Dictation Tool")
     parser.add_argument(
-        "--refine", action="store_true",
+        "--config", type=str, default=None, metavar="PATH",
+        help=f"Path to a {settings.CONFIG_FILENAME} settings file. Default: the "
+             f"one next to the app, else "
+             f"%%LOCALAPPDATA%%\\WhisperPaste\\{settings.CONFIG_FILENAME}.",
+    )
+    parser.add_argument(
+        "--refine", action="store_true", default=None,
         help="Enable Ollama/Gemma text refinement (uses more memory)",
     )
     parser.add_argument(
-        "--gpu", action="store_true",
-        help="Use whisper.cpp with GPU/Vulkan instead of faster-whisper on CPU (works with AMD GPUs)",
+        "--gpu", action="store_true", default=None,
+        help="Use whisper.cpp with GPU/Vulkan instead of faster-whisper on CPU "
+             "(works with AMD GPUs). Source installs only — not available in "
+             "the portable build.",
     )
     parser.add_argument(
         "--lang", type=str, default=None,
@@ -410,7 +487,7 @@ def _build_parser():
         help="Whisper model name, e.g. tiny, base, small, distil-small.en.",
     )
     parser.add_argument(
-        "--type", action="store_true",
+        "--type", action="store_true", default=None,
         help="Type the text character-by-character instead of pasting via the clipboard.",
     )
     parser.add_argument(
@@ -419,7 +496,7 @@ def _build_parser():
              "(default: %%LOCALAPPDATA%%\\WhisperPaste\\logs).",
     )
     parser.add_argument(
-        "--log-transcripts", action="store_true",
+        "--log-transcripts", action="store_true", default=None,
         help="Also write dictated text to the log. Off by default: the log is "
              "durable, so this keeps a permanent plaintext record of everything "
              "you dictate.",
@@ -428,11 +505,21 @@ def _build_parser():
 
 
 def _apply_args(args):
-    """Write parsed CLI flags into `config` before any other module reads it."""
-    config.USE_REFINER = args.refine
-    config.USE_GPU = args.gpu
-    config.USE_CLIPBOARD = not args.type
-    config.LOG_TRANSCRIPTS = args.log_transcripts
+    """Write parsed CLI flags into `config` before any other module reads it.
+
+    Every assignment is conditional on the flag actually having been supplied
+    (None = absent, see _build_parser). Anything the user did not pass is left
+    exactly as the settings file — applied just before this — left it, which is
+    what implements defaults < ini < CLI.
+    """
+    if args.refine is not None:
+        config.USE_REFINER = args.refine
+    if args.gpu is not None:
+        config.USE_GPU = args.gpu
+    if args.type is not None:
+        config.USE_CLIPBOARD = not args.type
+    if args.log_transcripts is not None:
+        config.LOG_TRANSCRIPTS = args.log_transcripts
     if args.log_dir:
         config.LOG_DIR = args.log_dir
     if args.lang:
@@ -441,17 +528,106 @@ def _apply_args(args):
         config.WHISPER_MODEL = args.model
 
 
+def _configure(argv=None):
+    """Parse the command line, apply the settings file, then apply CLI flags.
+
+    The order *is* the precedence rule (built-in defaults < ini < CLI), so keep
+    these three calls together and in this sequence. Returns the
+    `settings.SettingsResult` for `_report_settings` to surface once logging
+    exists — it cannot be logged here, because `--log-dir`/`--log-transcripts`
+    may themselves have come out of the file we just read.
+    """
+    args = _parse_args(argv)
+    result = settings.load_and_apply(args.config)
+    _apply_args(args)
+    return result
+
+
+def _report_settings(result):
+    """Log what the settings file did, and show errors the user must see.
+
+    Warnings (a mistyped key, a bad boolean) are log-only: the app is running
+    with sane defaults and a modal dialog on every launch would be worse than
+    the typo. A whole file that could not be read or parsed *is* worth a dialog
+    in a frozen build, where the log is the only other channel and the user has
+    no console to notice anything went wrong.
+    """
+    # `and not result.error`: parse_file stamps `path` before it knows the file
+    # is usable, so a file that could not be parsed arrives here with both set.
+    # Announcing it as loaded and then reporting it as discarded on the next
+    # line reads like two different files were involved. The error text already
+    # names the path.
+    if result.path and not result.error:
+        logger.info("Settings loaded from %s", result.path)
+    for warning in result.warnings:
+        logger.warning("Settings: %s", warning)
+    if result.error:
+        logger.error("Settings: %s", result.error)
+        if bundle.is_frozen():
+            _message_box(result.error)
+
+
+def _parse_args(argv=None):
+    """Parse the command line, surviving a windowed process with no streams.
+
+    Under ``--windowed`` / ``pythonw.exe`` both streams are None. argparse does
+    not crash on that — ``_print_message`` wraps ``file.write(message)`` in
+    ``except (AttributeError, OSError): pass`` — so ``--help`` and every bad
+    flag exit with the correct status and **no output whatsoever**. A silent
+    exit code 2 is indistinguishable from the app simply not starting, which is
+    the worst possible thing to hand a user who double-clicked an exe. When
+    either stream is missing we point both at a StringIO, let argparse write
+    into it, and show the result in a message box before re-raising SystemExit.
+
+    The redirection is scoped to this one call on purpose: a process-wide
+    StringIO stand-in would keep growing for the life of the app, since nothing
+    ever drains it.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return _build_parser().parse_args(argv)
+
+    buffer = io.StringIO()
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    sys.stdout = sys.stderr = buffer
+    try:
+        return _build_parser().parse_args(argv)
+    except SystemExit:
+        _message_box(buffer.getvalue().strip() or "Invalid command line.")
+        raise
+    finally:
+        sys.stdout, sys.stderr = real_stdout, real_stderr
+
+
 def main():
     global tray_icon, _startup_title
 
-    _apply_args(_build_parser().parse_args())
+    settings_result = _configure()
 
     _setup_logging()
+    _report_settings(settings_result)
+
+    # Reject --gpu in a frozen build. transcriber.py holds the authoritative
+    # check; this one exists so the *user* sees why, because a windowed build
+    # has no console to print to. Deliberately not in _apply_args: --gpu must
+    # keep working on a source install, and config.USE_GPU must still reflect
+    # the flag there (tests/test_cli.py pins that).
+    if config.USE_GPU and bundle.is_frozen():
+        logger.error("%s", bundle.GPU_UNSUPPORTED_MESSAGE)
+        _message_box(bundle.GPU_UNSUPPORTED_MESSAGE)
+        sys.exit(2)
 
     # Refuse to start a second instance — two would both register the global
     # hotkey and race on the clipboard, corrupting each other's pastes.
     if not _acquire_single_instance():
         logger.error("WhisperPaste is already running — exiting.")
+        # In the portable build there is no console, so a silent exit looks
+        # like a double-click that simply did nothing — the #1 support question.
+        if bundle.is_frozen():
+            _message_box(
+                "WhisperPaste is already running.\n\n"
+                "Look for the coloured circle in the system tray (you may need "
+                "to expand the hidden-icons area) and right-click it to quit."
+            )
         sys.exit(1)
 
     engine = "whisper.cpp (GPU/Vulkan)" if config.USE_GPU else "faster-whisper (CPU)"
@@ -486,11 +662,15 @@ def main():
     _set_tray_title(_startup_title)
 
     # Ctrl+C / console-close cannot cleanly unwind the native message pump, so
-    # route those events through our own clean shutdown instead.
-    try:
-        win32api.SetConsoleCtrlHandler(_console_ctrl_handler, True)
-    except Exception:
-        logger.exception("Failed to register console control handler")
+    # route those events through our own clean shutdown instead. Skipped with no
+    # console (windowed build): there are no console control events to receive,
+    # and the call would otherwise fail on every launch and log a traceback that
+    # looks like a real fault.
+    if _has_console():
+        try:
+            win32api.SetConsoleCtrlHandler(_console_ctrl_handler, True)
+        except Exception:
+            logger.exception("Failed to register console control handler")
 
     from whisper_paste.power_monitor import PowerMonitor
     PowerMonitor(on_resume=on_resume)

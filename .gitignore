@@ -11,4 +11,11 @@ __pycache__/
 *.swp
 .DS_Store
 .superpowers/
+.claude/worktrees/
 logs/
+
+# Portable-ZIP build outputs (scripts\build.ps1). build/ also holds the model
+# download cache, which is why -Clean never wipes build\models.
+build/
+dist/
+.venv-pin/
