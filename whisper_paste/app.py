@@ -118,7 +118,21 @@ def _has_console():
 
 
 def _label():
-    return "Dictation+LLM" if config.USE_REFINER else "Dictation"
+    """Build the tray title prefix. Every tooltip in every state routes through
+    here, so this is the one place to surface a durable-but-invisible setting.
+
+    ``LOG_TRANSCRIPTS`` used to require ``--log-transcripts`` on every launch;
+    now the settings file can turn it on permanently (see CLAUDE.md "Settings
+    file"), which means a user could be dictating into a plaintext log across
+    reboots with nothing on screen to say so. The suffix is plain BMP text, not
+    an icon or emoji: _fit_tooltip measures in UTF-16 code units and an astral
+    character costs two of the 127 available, a budget error tooltips already
+    spend on unbounded exception text.
+    """
+    label = "Dictation+LLM" if config.USE_REFINER else "Dictation"
+    if config.LOG_TRANSCRIPTS:
+        label += " — logging transcripts"
+    return label
 
 
 def _idle_title():

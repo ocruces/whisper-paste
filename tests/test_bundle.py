@@ -105,6 +105,30 @@ def test_non_bare_names_pass_through_untouched(frozen, name):
     assert bundle.bundled_model_dir(name) is None
 
 
+@pytest.mark.parametrize("name", ["C:x", "c:models"])
+def test_drive_relative_names_are_rejected(frozen, monkeypatch, name):
+    """A bare drive prefix with no separator escapes `os.path.isabs` and the
+    separator checks above, but it is not actually a bare model name.
+
+    `ntpath.join` collapses a drive-relative component instead of joining it:
+    measured, ``ntpath.join(r'D:\\app', 'models', 'C:x')`` returns ``'C:x'``,
+    discarding the ``models\\`` prefix entirely. On any install drive other
+    than `C:` that sends the lookup to the current directory on drive `C:`
+    instead of the bundle, which is exactly what the separator guard exists
+    to prevent — so names like this must be rejected too.
+
+    This can't be folded into `test_non_bare_names_pass_through_untouched`
+    above: that test creates the directory the naive join would have used,
+    via `os.path.join(str(frozen), "models", name)`, and a colon is not a
+    legal character in a Windows filename — `os.makedirs` would raise before
+    the assertion ever ran.
+    """
+    monkeypatch.setattr(sys, "executable", r"D:\app\WhisperPaste.exe")
+    monkeypatch.setattr(bundle.os.path, "isdir", lambda _: True)
+
+    assert bundle.bundled_model_dir(name) is None
+
+
 def test_gpu_message_points_at_the_readme():
     """Keep the message actionable: it is all the user sees in the tray tooltip."""
     message = bundle.GPU_UNSUPPORTED_MESSAGE

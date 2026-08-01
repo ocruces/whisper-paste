@@ -207,13 +207,36 @@ if ($venvUsable) {
     & $pyExe @pyPreArgs -m venv $buildVenv
     if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: venv creation failed." -ForegroundColor Red; exit 1 }
 
-    & $buildVenvPython -m pip install --upgrade pip
+    # Pinned, not just upgraded: an unpinned `--upgrade pip` resolves whatever
+    # is newest on the day someone runs -Clean, so the bootstrap step itself
+    # would drift between two builds of the same commit - the exact drift this
+    # whole file exists to remove from the requirements below it.
+    & $buildVenvPython -m pip install --upgrade pip==26.2
     if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: pip upgrade failed." -ForegroundColor Red; exit 1 }
 
     # --only-binary :all: - a source build here would compile against whatever
     # toolchain the machine happens to have, which is the opposite of pinned.
+    #
+    # --require-hashes - requirements-build.txt now carries a --hash=sha256:...
+    # per package, pinning the exact wheel bytes pip installs rather than just
+    # a version string that a compromised or re-uploaded index could serve
+    # different content under. --no-deps is required, not merely safe: the file
+    # is a full pip-freeze transitive closure, but `pip freeze` deliberately
+    # omits venv plumbing, and both ctranslate2 and pyinstaller declare an
+    # unconditional Requires-Dist on setuptools. Without --no-deps, pip would
+    # try to resolve setuptools, find no pin and no hash for it, and refuse the
+    # whole install - hash-checking mode will not resolve anything it cannot
+    # verify. With --no-deps it never looks, and the build works because
+    # `python -m venv` on 3.11 still provisions setuptools itself. That is a
+    # real dependency on BUILD_PYTHON staying at 3.11: 3.12+ dropped setuptools
+    # from new venvs, so raising that marker means adding setuptools to the
+    # pins, not just regenerating them. --isolated stops a stray
+    # %APPDATA%\pip\pip.ini or an inherited PIP_INDEX_URL on the build machine
+    # from quietly redirecting where these hashes get checked against - a
+    # hash-checked install from the wrong index is not a security property,
+    # it is theatre.
     Write-Host "Installing pinned build requirements ..."
-    & $buildVenvPython -m pip install --only-binary :all: -r $reqBuild
+    & $buildVenvPython -m pip install --only-binary :all: --require-hashes --no-deps --isolated -r $reqBuild
     if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: pinned install failed." -ForegroundColor Red; exit 1 }
 
     Set-Content -Path $stamp -Value $reqHash -Encoding utf8

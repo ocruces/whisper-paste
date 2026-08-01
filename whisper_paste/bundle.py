@@ -47,7 +47,14 @@ def bundled_model_dir(name):
       - `name` is not a bare model name. A path (``C:\\models\\x``) or a
         HuggingFace repo id (``Systran/faster-whisper-small``) has to reach
         WhisperModel untouched, and refusing separators is also what stops
-        ``--model ..\\..\\x`` from aiming the lookup outside the bundle;
+        ``--model ..\\..\\x`` from aiming the lookup outside the bundle. A
+        bare drive prefix like ``C:x`` needs its own check: it has no
+        separator and `os.path.isabs` calls it relative, yet it is
+        drive-relative, and `ntpath.join` collapses it — measured,
+        ``ntpath.join(r'D:\\app', 'models', 'C:x')`` returns ``'C:x'``, not a
+        path under ``models\\`` — so on any install drive other than `C:` it
+        would resolve against the current directory on drive `C:` instead of
+        the bundle. `os.path.splitdrive` catches this one;
       - nothing by that name shipped with this build — e.g. ``--model medium``
         on a ZIP built with ``-Model small``, which then downloads from
         HuggingFace as usual.
@@ -58,7 +65,13 @@ def bundled_model_dir(name):
     """
     if not is_frozen() or not name:
         return None
-    if os.path.isabs(name) or "/" in name or "\\" in name or name in (".", ".."):
+    if (
+        os.path.isabs(name)
+        or "/" in name
+        or "\\" in name
+        or name in (".", "..")
+        or os.path.splitdrive(name)[0]
+    ):
         return None
     path = os.path.join(
         os.path.dirname(os.path.abspath(sys.executable)), "models", name

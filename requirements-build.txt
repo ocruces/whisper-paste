@@ -19,11 +19,36 @@
 #                                         # venv plumbing, not build inputs, and
 #                                         # pinning them fights the venv module
 #
-# Regenerating means redoing that procedure end to end and replacing the whole
-# list. Do not bump a single line by hand: these are transitive pins, so raising
-# e.g. faster-whisper without re-resolving leaves tokenizers/ctranslate2/av at
-# versions its new metadata never asked for, and the set drifts out of the
-# combination that was actually tested.
+# That produces the pin set (name==version) below. The --hash lines are a
+# separate pass over that exact set, run outside the repo so nothing untracked
+# lands in the worktree:
+#
+#   py -3.11 -m pip download -r requirements-build.txt -d <tmpdir> --only-binary :all:
+#   py -3.11 -m pip hash <tmpdir>\*.whl
+#
+# and pasted in one --hash=sha256:... line per package, in the standard pip
+# continuation form. Regenerating means redoing both passes end to end and
+# replacing the whole list. Do not bump a single line by hand: these are
+# transitive pins, so raising e.g. faster-whisper without re-resolving leaves
+# tokenizers/ctranslate2/av at versions its new metadata never asked for, and
+# the set drifts out of the combination that was actually tested - and a
+# hand-edited version with a stale hash would just fail closed at install time
+# instead of drifting silently, which is the point of adding hashes at all.
+#
+# Why hashes: `==` pins a version string, not bytes. A compromised or
+# re-uploaded index could serve a different wheel under the same name and
+# version, and BUILD-INFO.txt's SHA-256 of this file would not notice - it
+# hashes the requirements *list*, not the resolved wheels. `--hash` pins the
+# exact wheel content pip installs, and pip's hash-checking mode (see
+# scripts\build.ps1) refuses to install anything that doesn't match.
+#
+# Binding by content instead of just by version has a cost: a hash is tied to
+# one specific wheel file, so this file is now Python-minor and platform
+# specific in a way a bare version pin was not - which is exactly what the
+# BUILD_PYTHON = 3.11 marker above already asserts for the interpreter, and
+# --only-binary :all: / win_amd64 already assert for the platform. Building
+# with a different Python minor needs a full regeneration, not just a new
+# venv.
 #
 # pywhispercpp is deliberately absent. --gpu needs it rebuilt locally with
 # GGML_VULKAN=1 (the PyPI wheel is CPU-only), which cannot be shipped as a
@@ -34,40 +59,77 @@
 # --only-binary :all: is used at install time: a source distribution slipping in
 # would build against whatever compiler this machine happens to have, which is
 # the opposite of a reproducible input.
-altgraph==0.17.5
-anyio==4.14.2
-av==18.0.0
-certifi==2026.7.22
-cffi==2.1.0
-click==8.4.2
-colorama==0.4.6
-ctranslate2==4.8.1
-faster-whisper==1.2.1
-filelock==3.32.2
-flatbuffers==25.12.19
-fsspec==2026.7.0
-h11==0.16.0
-hf-xet==1.5.2
-httpcore==1.0.9
-httpx==0.28.1
-huggingface_hub==1.26.0
-idna==3.18
-keyboard==0.13.5
-numpy==2.4.6
-onnxruntime==1.28.0
-packaging==26.2
-pefile==2024.8.26
-pillow==12.3.0
-protobuf==7.35.1
-pycparser==3.0
-pyinstaller==6.21.0
-pyinstaller-hooks-contrib==2026.6
-pystray==0.19.5
-pywin32==312
-pywin32-ctypes==0.2.3
-PyYAML==6.0.3
-six==1.17.0
-sounddevice==0.5.5
-tokenizers==0.23.1
-tqdm==4.70.0
-typing_extensions==4.16.0
+altgraph==0.17.5 \
+    --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+anyio==4.14.2 \
+    --hash=sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
+av==18.0.0 \
+    --hash=sha256:aaf4d354d2beaa6651e4f92e54409a578bde64f79c0beef9a30b388d06f7c629
+certifi==2026.7.22 \
+    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
+cffi==2.1.0 \
+    --hash=sha256:4f26194e3d95e06501b942642855aed4f953d55e95d7d01b7c4483db3ecff458
+click==8.4.2 \
+    --hash=sha256:e6f9f66136c816745b9d65817da91d61d957fb16e02e4dcd0552553c5a197b76
+colorama==0.4.6 \
+    --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6
+ctranslate2==4.8.1 \
+    --hash=sha256:82982f07a7d615d2248d17d6ec4c43cd50e534b094aa27cda62125a5e3a6e3fc
+faster-whisper==1.2.1 \
+    --hash=sha256:79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7
+filelock==3.32.2 \
+    --hash=sha256:87dd94cf281e586d135fa51132b8e3d9a598b316e90377a288663c9321036c82
+flatbuffers==25.12.19 \
+    --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+fsspec==2026.7.0 \
+    --hash=sha256:b57ddbafedfaef7018c1ecab32aa200a9d7ca26b77965f64e48b70061249d279
+h11==0.16.0 \
+    --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
+hf-xet==1.5.2 \
+    --hash=sha256:ecf63d1cb69a9a7319910f8f83fcf9b46e7a32dfcf4b8f8eeddb55f647306e65
+httpcore==1.0.9 \
+    --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55
+httpx==0.28.1 \
+    --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad
+huggingface_hub==1.26.0 \
+    --hash=sha256:e8cca670caa5d8dfa7e45bf45e86b466698198cd8150c021bcdb4a86b9252364
+idna==3.18 \
+    --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+keyboard==0.13.5 \
+    --hash=sha256:8e9c2422f1217e0bd84489b9ecd361027cc78415828f4fe4f88dd4acd587947b
+numpy==2.4.6 \
+    --hash=sha256:1e254a00cdf42b1e4d5b3d68d33af63268d41340d8885df2ab6470f2e1500147
+onnxruntime==1.28.0 \
+    --hash=sha256:0d650aeee29368414367b65529e90afe4bf1bab76254789063b8b2f7ea3013c8
+packaging==26.2 \
+    --hash=sha256:5fc45236b9446107ff2415ce77c807cee2862cb6fac22b8a73826d0693b0980e
+pefile==2024.8.26 \
+    --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+pillow==12.3.0 \
+    --hash=sha256:8e95e1385e4998ae9694eeaa4730ba5457ff61185b3a55e2e7bea0880aef452a
+protobuf==7.35.1 \
+    --hash=sha256:230a75ddfc2de4806e56696ce9640c1cdfdb6543b7cfce98d42a4c0a0e7bdb87
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pyinstaller==6.21.0 \
+    --hash=sha256:7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7
+pyinstaller-hooks-contrib==2026.6 \
+    --hash=sha256:fd13b8ac126b35361175edacd41a0d97080b75dd5f4b594ecefefff969509dd3
+pystray==0.19.5 \
+    --hash=sha256:a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617
+pywin32==312 \
+    --hash=sha256:d11417d84412f859b722fad0841b3614459ed0047f7542d8362e77884f6b6e8a
+pywin32-ctypes==0.2.3 \
+    --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+PyYAML==6.0.3 \
+    --hash=sha256:9f3bfb4965eb874431221a3ff3fdcddc7e74e3b07799e0e84ca4a0f867d449bf
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+sounddevice==0.5.5 \
+    --hash=sha256:cfc6b2c49fb7f555591c78cb8ecf48d6a637fd5b6e1db5fec6ed9365d64b3519
+tokenizers==0.23.1 \
+    --hash=sha256:e7bfaf995c1bdbbd21d13539decb6650967013759318627d85daeb7881af16b7
+tqdm==4.70.0 \
+    --hash=sha256:7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

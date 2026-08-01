@@ -41,12 +41,29 @@ def _read(path):
 
 
 def _requirement_lines():
-    """The actual pins, with comments and blank lines stripped out."""
-    return [
-        line.strip()
-        for line in _read(REQUIREMENTS_BUILD).splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    """The actual pins, one logical requirement per entry.
+
+    Comments and blank lines are stripped, and a trailing `\\` continuation —
+    used to carry a `--hash=sha256:...` line onto the `name==version` above it
+    — is joined back onto the requirement it belongs to, the same way pip
+    itself parses the file. Without the join, every hashed entry becomes two
+    short lines instead of one, and `test_every_build_requirement_is_pinned_
+    exactly` would flag the `--hash=...` line as an unpinned requirement.
+    """
+    logical = []
+    buffer = None
+    for raw_line in _read(REQUIREMENTS_BUILD).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if buffer is not None:
+            line = buffer + " " + line
+            buffer = None
+        if line.endswith("\\"):
+            buffer = line[:-1].rstrip()
+            continue
+        logical.append(line)
+    return logical
 
 
 # --------------------------------------------------------------------------
@@ -66,6 +83,23 @@ def test_every_build_requirement_is_pinned_exactly():
                 if not re.match(r"^[A-Za-z0-9._-]+==", line)]
 
     assert unpinned == [], f"not pinned with '==': {unpinned}"
+
+
+def test_every_build_requirement_carries_a_hash():
+    """`==` pins a version string, not the bytes pip actually installs.
+
+    BUILD-INFO.txt records the SHA-256 of this file's *text*, not of the
+    resolved wheels, so a wheel swapped out from under an unchanged version
+    pin would produce an identical BUILD-INFO line — the file would look
+    untampered while shipping different content. A `--hash=sha256:` per
+    requirement is what lets `pip install --require-hashes` (see
+    scripts\\build.ps1) refuse to install anything but the exact wheel bytes
+    that were measured when this file was generated.
+    """
+    hash_re = re.compile(r"--hash=sha256:([0-9a-f]{64})\b")
+
+    for line in _requirement_lines():
+        assert hash_re.search(line), f"no --hash=sha256:<64 hex chars> on: {line}"
 
 
 def test_build_requirements_are_not_empty():
@@ -495,6 +529,26 @@ def test_build_script_stages_the_launchers_and_the_settings_file():
     assert "launcher-template.cmd" in text
     assert "whisper-paste.ini" in text
     assert '"WhisperPaste-$code.cmd"' in text
+
+
+def test_build_script_requires_hashes():
+    """Keep hash checking explicit rather than incidental.
+
+    pip enables hash-checking mode on its own as soon as any requirement
+    carries a `--hash` ("This option is implied when any package in a
+    requirements file has a --hash option"), so the flag is not what makes the
+    current file verified. What it buys is a floor: if a future regeneration
+    ever drops the hashes, implied mode switches itself off silently and the
+    build keeps passing with version-only pins, whereas the explicit flag turns
+    that same edit into a loud failure. It also means nobody has to know about
+    the implication rule to read the build script correctly.
+
+    Paired with test_every_build_requirement_carries_a_hash: that one pins the
+    data, this one pins the enforcement.
+    """
+    text = _read(BUILD_PS1)
+
+    assert "--require-hashes" in text
 
 
 def test_build_script_writes_launchers_without_a_bom():

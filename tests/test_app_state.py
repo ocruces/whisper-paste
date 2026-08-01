@@ -611,10 +611,38 @@ def test_idle_tooltip_honours_refiner_and_hotkey(monkeypatch):
     app.tray_icon = tray
     monkeypatch.setattr(config, "USE_REFINER", True)
     monkeypatch.setattr(config, "HOTKEY", "ctrl+alt+d")
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", False)
 
     app.update_tray("idle")
 
     assert tray.title == "Dictation+LLM — Ready (ctrl+alt+d)"
+
+
+@pytest.mark.parametrize("state", ["idle", "recording", "processing"])
+def test_tooltip_flags_transcript_logging_when_on(monkeypatch, state):
+    """LOG_TRANSCRIPTS is durable now (settings file, not just --log-transcripts),
+    so every state's tooltip must say so — nothing else on screen would.
+    """
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+    monkeypatch.setattr(config, "USE_REFINER", False)
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", True)
+
+    app.update_tray(state)
+
+    assert "logging transcripts" in tray.title
+
+
+@pytest.mark.parametrize("state", ["idle", "recording", "processing"])
+def test_tooltip_omits_logging_marker_when_off(monkeypatch, state):
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+    monkeypatch.setattr(config, "USE_REFINER", False)
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", False)
+
+    app.update_tray(state)
+
+    assert "logging transcripts" not in tray.title
 
 
 def test_preload_survives_a_long_model_error(monkeypatch):
@@ -636,6 +664,26 @@ def test_preload_survives_a_long_model_error(monkeypatch):
 
     assert _title_units(app._startup_title) <= 127
     assert "Model load error" in tray.title
+
+
+def test_preload_survives_a_long_model_error_with_logging_marker(monkeypatch):
+    """Same regression as above, but with the logging-transcripts suffix in
+    play — it eats into the same 127-unit budget as the exception text, so the
+    clamp has to hold with both present at once.
+    """
+    tray = FakeTrayIcon()
+    app.tray_icon = tray
+    monkeypatch.setattr(config, "USE_REFINER", False)
+    monkeypatch.setattr(config, "LOG_TRANSCRIPTS", True)
+
+    def boom():
+        raise RuntimeError("could not load model: " + "detail " * 40)
+
+    monkeypatch.setattr(app.transcriber, "preload", boom)
+
+    app._preload_model()
+
+    assert _title_units(app._startup_title) <= 127
 
 
 def test_processing_error_tooltip_is_clamped(monkeypatch):
