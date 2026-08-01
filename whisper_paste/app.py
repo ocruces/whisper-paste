@@ -33,6 +33,7 @@ recorder = Recorder()
 tray_icon: Icon = None
 processing = False
 _hotkey_handle = None
+_hotkey_error = None
 
 # Guards every idle -> recording -> processing transition. It is held only for
 # the quick state flip (start the mic / arm the worker); the long work
@@ -136,7 +137,14 @@ def _label():
 
 
 def _idle_title():
-    return f"{_label()} — Ready ({config.HOTKEY})"
+    if config.HOTKEY is None:
+        # No usable hotkey registered — see the log for details.
+        base = f"{_label()} — No usable hotkey (see log). Not ready."
+    else:
+        base = f"{_label()} — Ready ({config.HOTKEY})"
+    # HOTKEY used to be a hard-coded constant but is now user-supplied from the
+    # ini or --hotkey, and a long value would overflow the fixed-size szTip field.
+    return _fit_tooltip(base)
 
 
 # NOTIFYICONDATAW.szTip is a WCHAR[128] including the terminating NUL, so 127
@@ -361,11 +369,98 @@ def _acquire_single_instance():
     return win32api.GetLastError() != winerror.ERROR_ALREADY_EXISTS
 
 
+def _validate_hotkey(value):
+    """Validate a hotkey string without installing a hook.
+
+    This is the same parser keyboard.add_hotkey uses, so it rejects exactly what
+    registration would reject. It runs without installing a hook. It also strips
+    whitespace because neither an ini value nor a quoted flag is stripped for us,
+    and keyboard.parse_hotkey rejects padding.
+
+    Also rejects any combination containing the Windows key. It does not work in
+    practice — Windows handles win-key combinations above the low-level keyboard
+    hook this app installs — so keyboard.add_hotkey "succeeds" and the hotkey
+    then silently never fires. That is worse than refusing it outright, which is
+    why this fails closed here rather than letting registration report success.
+
+    Returns None if the value is invalid or empty, otherwise returns the stripped
+    text that passed validation.
+    """
+    text = value.strip() if value else None
+    if not text:
+        return None
+    try:
+        # parse_hotkey returns steps of alternative-key-sets of scan codes, so
+        # flattening all three levels is what catches a Windows key buried in a
+        # later step of a sequence ("a, win+b"), not just a leading one.
+        steps = keyboard.parse_hotkey(text)
+        used = {code for step in steps for key in step for code in key}
+        if used & set(keyboard.key_to_scan_codes("windows")):
+            logger.error(
+                "Hotkey %r rejected: the Windows key does not work as part of a "
+                "hotkey — Windows handles it above the low-level keyboard hook.",
+                text,
+            )
+            return None
+    except (ValueError, KeyError):
+        return None
+
+    return text
+
+
 def _register_hotkey():
-    global _hotkey_handle
-    _hotkey_handle = keyboard.add_hotkey(
-        config.HOTKEY, on_hotkey, suppress=True, trigger_on_release=True
-    )
+    """Register the global hotkey or fall back if it fails. Never raises.
+
+    This is load-bearing, not defensive habit. It runs from main() before the
+    tray exists in a process that may have no console (a raise means the user
+    sees literally nothing), and from on_resume() on the power-monitor daemon
+    thread (a raise leaves the app alive but deaf). After it returns,
+    config.HOTKEY equals exactly what is actually registered, or is None if
+    nothing is.
+    """
+    global _hotkey_handle, _hotkey_error
+    _hotkey_handle = None
+    _hotkey_error = None
+
+    # Build the candidate list: the configured hotkey, then the default if it
+    # differs.
+    candidates = [config.HOTKEY]
+    if config.DEFAULT_HOTKEY != config.HOTKEY:
+        candidates.append(config.DEFAULT_HOTKEY)
+
+    requested = config.HOTKEY
+
+    for index, candidate in enumerate(candidates):
+        valid = _validate_hotkey(candidate)
+        if valid is None:
+            logger.error("Hotkey %r is not usable — trying next candidate.", candidate)
+            continue
+
+        try:
+            _hotkey_handle = keyboard.add_hotkey(
+                valid, on_hotkey, suppress=True, trigger_on_release=True
+            )
+        except Exception:
+            logger.exception("Failed to register hotkey %r — trying next candidate.", valid)
+            continue
+
+        # Success: update config and report.
+        config.HOTKEY = valid
+        # Only a *fallback* is worth telling the user about, which is why this
+        # keys off the candidate index and not `valid != requested`. The first
+        # candidate can legitimately differ from what was requested — a value
+        # padded with spaces in the ini validates to its stripped form — and
+        # reporting that as "not usable" would put a message box in front of a
+        # frozen user over a trailing space.
+        if index > 0:
+            _hotkey_error = f"Hotkey {requested!r} is not usable — using {valid} instead."
+            logger.warning("%s", _hotkey_error)
+        return
+
+    # All candidates failed: disable hotkey and report.
+    config.HOTKEY = None
+    _hotkey_error = "No usable hotkey registered — dictation is disabled. See log for details."
+    logger.error("%s", _hotkey_error)
 
 
 def on_resume():
@@ -501,6 +596,10 @@ def _build_parser():
         help="Whisper model name, e.g. tiny, base, small, distil-small.en.",
     )
     parser.add_argument(
+        "--hotkey", type=str, default=None, metavar="COMBO",
+        help="Global hotkey as a +-joined combination, e.g. ctrl+alt+d (default: ctrl+shift+space).",
+    )
+    parser.add_argument(
         "--type", action="store_true", default=None,
         help="Type the text character-by-character instead of pasting via the clipboard.",
     )
@@ -540,6 +639,8 @@ def _apply_args(args):
         config.WHISPER_LANGUAGE = args.lang
     if args.model:
         config.WHISPER_MODEL = args.model
+    if args.hotkey:
+        config.HOTKEY = args.hotkey
 
 
 def _configure(argv=None):
@@ -644,6 +745,15 @@ def main():
             )
         sys.exit(1)
 
+    # Register global hotkey before the preload thread starts, so _preload_model
+    # computes the correct _idle_title() with the actual hotkey already set.
+    _register_hotkey()
+
+    # Show hotkey registration errors in a frozen build (the only channel before
+    # the tray is up). Mirror how _report_settings surfaces its errors.
+    if _hotkey_error and bundle.is_frozen():
+        _message_box(_hotkey_error)
+
     engine = "whisper.cpp (GPU/Vulkan)" if config.USE_GPU else "faster-whisper (CPU)"
     refine_mode = " + Ollama refinement" if config.USE_REFINER else ""
     lang_info = (
@@ -654,16 +764,18 @@ def main():
     logger.info("Voice Dictation Tool")
     logger.info("Engine: %s%s%s", engine, refine_mode, lang_info)
     logger.info("Model: %s | Output: %s", config.WHISPER_MODEL, output_mode)
-    logger.info("Hotkey: %s", config.HOTKEY)
-    logger.info("Press the hotkey to start recording, press again to stop and paste.")
+    # Logged after _register_hotkey(), so this is the combination actually in
+    # force rather than the one that was asked for.
+    if config.HOTKEY is None:
+        logger.info("Hotkey: none registered — dictation is disabled.")
+    else:
+        logger.info("Hotkey: %s", config.HOTKEY)
+        logger.info("Press the hotkey to start recording, press again to stop and paste.")
     logger.info("The app runs in the system tray. Right-click the tray icon to quit.")
 
     # Preload the model in the background while the tray/hotkey come up.
     _startup_title = f"{_label()} — Loading model…"
     threading.Thread(target=_preload_model, daemon=True).start()
-
-    # Register global hotkey
-    _register_hotkey()
 
     # Create and run system tray icon
     tray_icon = Icon(

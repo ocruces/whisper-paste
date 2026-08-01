@@ -12,7 +12,7 @@ from whisper_paste import config
 
 _CONFIG_KEYS = (
     "USE_REFINER", "USE_GPU", "USE_CLIPBOARD", "WHISPER_LANGUAGE",
-    "WHISPER_MODEL", "LOG_DIR", "LOG_TRANSCRIPTS",
+    "WHISPER_MODEL", "HOTKEY", "LOG_DIR", "LOG_TRANSCRIPTS",
 )
 
 
@@ -136,3 +136,20 @@ def test_language_and_model_are_left_alone_when_not_passed():
 
     assert config.WHISPER_LANGUAGE == "fr"
     assert config.WHISPER_MODEL == "medium"
+
+
+def test_hotkey_flag_lands_in_config():
+    """--hotkey COMBO writes to config.HOTKEY."""
+    _apply(["--hotkey", "ctrl+alt+d"])
+
+    assert config.HOTKEY == "ctrl+alt+d"
+
+
+def test_hotkey_is_left_at_default_when_not_passed():
+    """A bare parse leaves config.HOTKEY at its built-in default."""
+    # Save and reset to the known default first
+    config.HOTKEY = config.DEFAULT_HOTKEY
+
+    _apply([])
+
+    assert config.HOTKEY == config.DEFAULT_HOTKEY

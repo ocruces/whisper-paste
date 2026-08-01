@@ -88,6 +88,14 @@ class FakeTimer:
 @pytest.fixture(autouse=True)
 def reset_app_state(monkeypatch):
     saved_refiner = config.USE_REFINER
+    # _register_hotkey rewrites config.HOTKEY to whatever it managed to
+    # register, so the hotkey tests below mutate global state. Restoring here
+    # rather than at the end of each test matters: a failing assertion would
+    # skip an in-test restore and leak a bad (or None) hotkey into every later
+    # test in the session.
+    saved_hotkey = config.HOTKEY
+    saved_hotkey_handle = app._hotkey_handle
+    saved_hotkey_error = app._hotkey_error
     app.processing = False
     app.tray_icon = None
     app._record_timer = None
@@ -101,6 +109,9 @@ def reset_app_state(monkeypatch):
     app._record_timer = None
     app._shutting_down = False
     config.USE_REFINER = saved_refiner
+    config.HOTKEY = saved_hotkey
+    app._hotkey_handle = saved_hotkey_handle
+    app._hotkey_error = saved_hotkey_error
 
 
 class FakeTrayIcon:
@@ -711,3 +722,166 @@ def test_processing_error_tooltip_is_clamped(monkeypatch):
 
     assert app.processing is False
     assert _title_units(tray.title) <= 127
+
+
+# --------------------------------------------------------------------------- #
+# Hotkey registration (_register_hotkey)
+#
+# config.HOTKEY, app._hotkey_handle and app._hotkey_error are all restored by
+# the autouse reset_app_state fixture, so no test here unwinds its own state —
+# a failing assertion would skip an in-test restore and poison the session.
+# --------------------------------------------------------------------------- #
+def _record_registrations(monkeypatch):
+    """Stand in for keyboard.add_hotkey, returning the combos it was given."""
+    registered = []
+
+    def fake_add_hotkey(hotkey, callback, **kwargs):
+        registered.append(hotkey)
+        return "HANDLE"
+
+    monkeypatch.setattr(app.keyboard, "add_hotkey", fake_add_hotkey)
+    return registered
+
+
+def _always_fail(monkeypatch):
+    def fake_add_hotkey(hotkey, callback, **kwargs):
+        raise RuntimeError("add_hotkey failed")
+
+    monkeypatch.setattr(app.keyboard, "add_hotkey", fake_add_hotkey)
+
+
+def test_a_valid_hotkey_is_registered_unchanged(monkeypatch):
+    config.HOTKEY = "ctrl+alt+d"
+    registered = _record_registrations(monkeypatch)
+
+    app._register_hotkey()
+
+    assert registered == ["ctrl+alt+d"]
+    assert config.HOTKEY == "ctrl+alt+d"
+    assert app._hotkey_error is None
+
+
+def test_a_padded_hotkey_is_stripped_without_being_called_a_fallback(monkeypatch):
+    """Padding is cleaned up silently, not reported as a failure.
+
+    keyboard.parse_hotkey rejects surrounding spaces, and neither an ini value
+    nor a quoted flag arrives stripped — so stripping is routine. Setting
+    _hotkey_error here would put a message box in front of a frozen user over a
+    trailing space.
+    """
+    config.HOTKEY = "  ctrl+alt+d  "
+    registered = _record_registrations(monkeypatch)
+
+    app._register_hotkey()
+
+    assert registered == ["ctrl+alt+d"]
+    assert config.HOTKEY == "ctrl+alt+d"
+    assert app._hotkey_error is None
+
+
+def test_an_unparseable_hotkey_falls_back_to_the_default(monkeypatch):
+    config.HOTKEY = "ctrl+shift+zzzz"
+    registered = _record_registrations(monkeypatch)
+
+    app._register_hotkey()
+
+    assert registered == [config.DEFAULT_HOTKEY]
+    assert config.HOTKEY == config.DEFAULT_HOTKEY
+    assert app._hotkey_error
+
+
+def test_registration_failing_on_every_candidate_leaves_no_hotkey(monkeypatch):
+    """Both candidates failing must still return normally.
+
+    _register_hotkey runs from main() before the tray icon exists, in a process
+    that may have no console, and from on_resume() on the power-monitor daemon
+    thread. Raising in either place is invisible to the user.
+    """
+    config.HOTKEY = "ctrl+alt+d"
+    _always_fail(monkeypatch)
+
+    app._register_hotkey()
+
+    assert config.HOTKEY is None
+    assert app._hotkey_handle is None
+    assert app._hotkey_error
+
+
+def test_idle_title_says_so_when_there_is_no_hotkey():
+    config.HOTKEY = None
+
+    title = app._idle_title()
+
+    assert _title_units(title) <= app._MAX_TOOLTIP
+    assert "None" not in title
+    assert "usable hotkey" in title.lower()
+
+
+def test_idle_title_is_clamped_for_a_long_user_supplied_hotkey():
+    """A hotkey long enough to overflow szTip on its own must be clamped.
+
+    keyboard accepts comma-separated *sequences*, so a parseable hotkey has no
+    practical length limit — which is why _idle_title has to go through
+    _fit_tooltip now that config.HOTKEY comes from the ini or --hotkey.
+    """
+    config.HOTKEY = ", ".join("abcdefghijklmnopqrstuvwxyz" * 8)
+    assert _title_units(config.HOTKEY) > app._MAX_TOOLTIP
+
+    title = app._idle_title()
+
+    assert _title_units(title) <= app._MAX_TOOLTIP
+
+
+# --------------------------------------------------------------------------- #
+# Windows key is rejected by _validate_hotkey
+#
+# Windows handles win-key combinations above the low-level keyboard hook, so
+# such a hotkey "registers" successfully and then silently never fires — the
+# worst possible outcome. _validate_hotkey rejects them up front so the
+# existing fallback machinery in _register_hotkey takes over instead.
+# --------------------------------------------------------------------------- #
+def test_a_windows_key_combo_is_rejected():
+    assert app._validate_hotkey("win+alt+d") is None
+
+
+def test_a_non_windows_combo_is_still_accepted():
+    """The Windows-key guard must not over-reach onto ordinary combos."""
+    assert app._validate_hotkey("ctrl+alt+d") == "ctrl+alt+d"
+
+
+@pytest.mark.parametrize(
+    "hotkey",
+    [
+        "windows+d",
+        "cmd+d",
+        "left windows+d",
+        "right windows+d",
+        "win",
+    ],
+)
+def test_every_windows_key_spelling_is_rejected(hotkey):
+    assert app._validate_hotkey(hotkey) is None
+
+
+def test_a_windows_key_in_a_later_sequence_step_is_still_rejected():
+    """A naive "check only the first step" implementation would miss this.
+
+    keyboard.parse_hotkey("a, win+b") puts the Windows key in the SECOND step,
+    not the first, so the whole parsed structure must be checked.
+    """
+    assert app._validate_hotkey("a, win+b") is None
+
+
+def test_a_windows_key_hotkey_falls_back_to_the_default(monkeypatch):
+    """win+alt+d "registers" but never fires, so it must fall back like an
+    unparseable hotkey does — modeled on
+    test_an_unparseable_hotkey_falls_back_to_the_default.
+    """
+    config.HOTKEY = "win+alt+d"
+    registered = _record_registrations(monkeypatch)
+
+    app._register_hotkey()
+
+    assert registered == [config.DEFAULT_HOTKEY]
+    assert config.HOTKEY == config.DEFAULT_HOTKEY
+    assert app._hotkey_error

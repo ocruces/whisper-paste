@@ -510,6 +510,24 @@ def test_the_ini_beats_the_built_in_defaults(tmp_path):
     assert config.WHISPER_MODEL == "base"
 
 
+def test_cli_hotkey_beats_ini(tmp_path):
+    """--hotkey must beat an ini that also set it."""
+    ini = _ini(tmp_path, "[whisper-paste]\nhotkey = ctrl+alt+d\n")
+
+    app._configure(["--config", str(ini), "--hotkey", "ctrl+shift+h"])
+
+    assert config.HOTKEY == "ctrl+shift+h"
+
+
+def test_ini_hotkey_applies_when_no_flag(tmp_path):
+    """An ini hotkey must apply when --hotkey is not passed."""
+    ini = _ini(tmp_path, "[whisper-paste]\nhotkey = ctrl+alt+d\n")
+
+    app._configure(["--config", str(ini)])
+
+    assert config.HOTKEY == "ctrl+alt+d"
+
+
 def test_configure_without_any_settings_file_keeps_the_defaults():
     result = app._configure([])
 

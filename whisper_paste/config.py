@@ -1,7 +1,9 @@
 """Configuration for the voice dictation tool."""
 
-# Global hotkey to toggle recording (press to start, press again to stop)
-HOTKEY = "ctrl+shift+space"
+# Global hotkey to toggle recording (press to start, press again to stop).
+# Defaults to the constant below; overridden by whisper-paste.ini / --hotkey.
+DEFAULT_HOTKEY = "ctrl+shift+space"
+HOTKEY = DEFAULT_HOTKEY
 
 # Whisper settings
 WHISPER_MODEL = "small"  # Options: tiny, base, small, medium, large-v3
