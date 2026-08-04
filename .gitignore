@@ -14,6 +14,11 @@ __pycache__/
 .claude/worktrees/
 logs/
 
+# Personal settings for a source run: settings._base_dir() is the repo root when
+# not frozen, so this is the "next to the app" ini. Copied from
+# packaging\whisper-paste.ini, which stays tracked as the template.
+/whisper-paste.ini
+
 # Portable-ZIP build outputs (scripts\build.ps1). build/ also holds the model
 # download cache, which is why -Clean never wipes build\models.
 build/

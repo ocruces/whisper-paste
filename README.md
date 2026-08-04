@@ -6,12 +6,50 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey)
 
+[Quick start](#quick-start) · [Features](#features) · [Requirements](#requirements) · [Install from source](#install-from-source) · [Portable build](#portable-build) · [Usage](#usage) · [Flags](#flags) · [Privacy](#privacy) · [Troubleshooting](#troubleshooting) · [Development](#development)
+
 WhisperPaste lives in your system tray. Press `Ctrl+Shift+Space` in any application, dictate, press it again, and the transcribed text appears at the cursor. Speech recognition runs on-device with [Whisper](https://github.com/openai/whisper) — nothing is sent to a server.
 
 ```
 tray icon:   🟢 idle / ready       →  🔴 recording       →  🔵 processing       →  🟢 idle
              (press hotkey)           (speak; press again)   (transcribe + paste)
 ```
+
+## Quick start
+
+```powershell
+git clone https://github.com/ocruces/whisper-paste.git
+cd whisper-paste
+scripts\install.ps1      # creates .venv and installs dependencies
+scripts\run.ps1          # launches the tray app
+
+# Optional: dictation language and/or a custom hotkey
+scripts\run.ps1 --lang es --hotkey alt+shift+space
+```
+
+The tray icon appears right away, but its tooltip reads "Loading model…" for a bit while the Whisper model loads in the background:
+
+![Tray tooltip reading "Dictation — Loading model…"](docs/images/tray-loading-model.png)
+
+The very first run also downloads the model, so that step takes noticeably longer and needs internet just that once — after it's cached, every later launch loads it from disk in a few seconds (see [Requirements](#requirements)).
+
+**You don't need to wait for it.** Pressing the hotkey starts the microphone straight away, regardless of whether the model has finished loading — only the transcription step (after you press the hotkey a second time) needs it. So go ahead and start dictating as soon as the icon shows up; if the model is still loading when you stop, WhisperPaste just finishes loading it before pasting your text.
+
+Click into any app, press `Ctrl+Shift+Space`, speak, press it again — the text is pasted at your cursor.
+
+**Pass `--lang` if you always dictate in the same language** (e.g. `--lang es`) — it's faster than the default auto-detection, and it *forces* the output into that language. See [Flags](#flags) for the trade-off.
+
+### Pin the icon to your taskbar
+
+WhisperPaste's icon starts in the hidden-icons tray overflow, so the current state (idle/recording/processing) isn't visible at a glance. Drag it onto the taskbar to keep it always visible:
+
+| 1. Open hidden icons | 2. Drag the app icon |
+|---|---|
+| ![Open the hidden-icons tray overflow](docs/images/pin-icon-1-open-hidden-icons.png) | ![Drag the WhisperPaste icon out](docs/images/pin-icon-2-drag.png) |
+| **3. Drop it on the taskbar** | **4. Done** |
+| ![Drop the icon onto the taskbar](docs/images/pin-icon-3-drop-on-taskbar.png) | ![Icon now pinned on the taskbar](docs/images/pin-icon-4-done.png) |
+
+That's the whole thing. Everything below is reference material: flags, settings file, GPU support, troubleshooting, and how it works internally.
 
 ## Features
 
@@ -33,7 +71,7 @@ tray icon:   🟢 idle / ready       →  🔴 recording       →  🔵 process
 
 - Windows 10 or 11
 - A microphone
-- ~750 MB of free disk space
+- ~720 MB of free disk space once unzipped (~1.4 GB while extracting)
 
 **Install from source** — additionally:
 
@@ -41,17 +79,35 @@ tray icon:   🟢 idle / ready       →  🔴 recording       →  🔵 process
 
 On a source install the first run downloads the Whisper model (the background preload fetches it). That needs internet **once**; after the model is cached, transcription is fully offline. The portable ZIP already contains the model, so it never does this.
 
-## Download (portable ZIP)
+## Install from source
 
-Download `WhisperPaste-1.0.0-win64-small.zip` from the [Releases page](https://github.com/ocruces/whisper-paste/releases), unzip it wherever you like, and double-click **`WhisperPaste.exe`**. A green circle appears in the system tray — press `Ctrl+Shift+Space` and dictate.
+The three commands are in [Quick start](#quick-start) above — clone, `scripts\install.ps1`, `scripts\run.ps1`. You can also double-click `scripts\install.bat` and `scripts\run.bat` if you prefer not to use a PowerShell prompt.
+
+- Contributors: `scripts\install.ps1 -Dev` also installs the test dependencies.
+- Tray-only session (no console window): `scripts\run.ps1 -NoConsole` — quit it from the tray icon.
+- Extra flags pass straight through: `scripts\run.ps1 --model small --lang en`.
+
+**A settings file works from source too**, so you don't have to retype flags on every launch. Copy the template to the repository root — that is the "next to the app" location for a source run — and edit it:
+
+```powershell
+copy packaging\whisper-paste.ini whisper-paste.ini
+```
+
+Same keys, same precedence, same search order as the portable build ([Settings and language](#settings-and-language) has the details); the only difference is where the first candidate lives. Your copy is gitignored, and the tracked `packaging\whisper-paste.ini` stays the pristine template.
+
+## Portable build
+
+**How to get one:** build it yourself with `scripts\build.ps1` — see [Building the portable ZIP](#building-the-portable-zip) for the one-line command and the options. There is no Releases page and no download here: there's no code-signing certificate behind this project, and an unsigned binary from a stranger is a lot to ask someone to trust.
+
+What the build produces is a self-contained folder with no Python in sight. Unzip it wherever you like and double-click **`WhisperPaste.exe`**; a green circle appears in the system tray — press `Ctrl+Shift+Space` and dictate.
 
 - **The Whisper model is inside the ZIP, so the first run works offline.** Nothing is downloaded at launch.
 - **Nothing is installed.** The folder is self-contained; the only thing written outside it is the log in `%LOCALAPPDATA%\WhisperPaste\logs`. To uninstall, quit from the tray icon and delete the folder.
 - **Unzip somewhere only you can write** — under your profile (`%LOCALAPPDATA%`, `%USERPROFILE%\Apps`, Documents) rather than `C:\`, `C:\ProgramData`, or a shared/network drive. WhisperPaste runs the DLLs sitting next to the exe, so on a shared machine anyone who can write to that folder can change what the app does. A folder created directly under `C:\` grants every local account write access by default, which is why it is worth a moment's thought; a folder inside your profile does not. This matters on shared or managed machines, not on a PC only you use.
-- **Unzipped it is about 716 MB** — the `small` model is ~486 MB of that, the code and embedded Python runtime ~252 MB.
-- **Give it about 13 seconds.** The tray icon appears at once, but its tooltip reads "Loading model…" until the model has been loaded and warmed up.
+- **Unzipped it is about 720 MB** — the `small` model is ~460 MB of that, the code and embedded Python runtime ~260 MB. Allow roughly twice that while extracting, since the ZIP and the extracted folder exist side by side.
+- **The tray icon appears at once**, but its tooltip reads "Loading model…" until the model has finished loading and warming up — see [Quick start](#quick-start) for why you don't need to wait for that before you start recording.
 
-Verify the download against the SHA-256 published with the release:
+`scripts\build.ps1` prints the ZIP's SHA-256 when it finishes. If you ever hand a built copy to someone else, that hash is what lets them confirm the copy they received matches the one you built:
 
 ```powershell
 Get-FileHash .\WhisperPaste-1.0.0-win64-small.zip -Algorithm SHA256
@@ -70,11 +126,11 @@ Flags work exactly as they do on a source install — pass them to the exe (or a
 | `WhisperPaste.exe` | The app. Windowed: it has no console and prints nothing anywhere — the log file is its output. |
 | `WhisperPaste-debug.exe` | The identical program linked as a console application, so startup errors are readable. |
 | `debug-console.cmd` | Launches `WhisperPaste-debug.exe`, forwards your flags, and keeps the window open with the exit code. |
-| `WhisperPaste-en.cmd`, `WhisperPaste-es.cmd` | One-click launchers that start the app with a fixed dictation language — see [Settings and language](#settings-and-language). Which ones exist is a build option; releases ship `en` and `es`. |
+| `WhisperPaste-en.cmd`, `WhisperPaste-es.cmd` | One-click launchers that start the app with a fixed dictation language — see [Settings and language](#settings-and-language). Which ones exist is a build option; the default build ships `en` and `es`. |
 | `whisper-paste.ini` | Settings file (language, model, hotkey, output mode, logging). Ships with every line commented out, so it changes nothing until you edit it. |
 | `models\` | The bundled Whisper model (`small` by default). Drop your own in here too — see [Flags](#flags). |
 | `_internal\` | Python runtime and libraries. Leave it alone; both exes need it. |
-| `licenses\` | Licence texts harvested from the exact package versions in this build (36 packages). |
+| `licenses\` | Licence texts harvested at build time from the exact package versions in this build, one folder per bundled package. |
 | `THIRD-PARTY-NOTICES.md` | What the bundled pystray and FFmpeg licences require, and how this build meets them. |
 | `BUILD-INFO.txt` | Version, git commit, model repo and revision, Python and PyInstaller versions, and the hash of the pinned build requirements. |
 | `README.md`, `LICENSE` | This file, and the MIT licence. |
@@ -85,12 +141,12 @@ The portable build is normally started by double-clicking, and a double-click ca
 
 **One-click language launchers.** Double-click `WhisperPaste-es.cmd` instead of `WhisperPaste.exe` to dictate in Spanish. That is all a launcher is: the same exe started with `--lang es`. Extra flags are forwarded, so `WhisperPaste-es.cmd --refine` works, and a repeated flag wins, so `WhisperPaste-es.cmd --lang fr` overrides the baked-in language for that one run. Which launchers ship is decided at build time (see [Building the portable ZIP](#building-the-portable-zip)); they are regenerated by every build, so don't hand-edit them.
 
-**`whisper-paste.ini`, for everything else.** Open it in Notepad, delete the `;` at the start of the setting you want, change the value, save, and restart WhisperPaste — settings are read once, at startup. The keys are `language`, `model`, `hotkey`, `refine`, `output` (`clipboard` or `type`), `log_transcripts` and `log_dir`, each documented in the file next to its default. In `log_dir`, Windows shortcuts like `%LOCALAPPDATA%`, `%USERPROFILE%` and `~` are expanded. Unlike a launcher, this also applies when the app is started from a shortcut, from autostart, or by a plain double-click on the exe. Every ini key now has a command-line counterpart — `hotkey` gained `--hotkey`, which was the last one missing — and a flag always wins over the file. Note the on/off keys only have a flag that switches them *on*: `refine`, `log_transcripts` and `output = type` can be set from the command line but not unset there, so to turn one back off, edit the file.
+**`whisper-paste.ini`, for everything else.** Open it in Notepad, delete the `;` at the start of the setting you want, change the value, save, and restart WhisperPaste — settings are read once, at startup. The keys are `language`, `model`, `hotkey`, `refine`, `output` (`clipboard` or `type`), `log_transcripts` and `log_dir`, each documented in the file next to its default. In `log_dir`, Windows shortcuts like `%LOCALAPPDATA%`, `%USERPROFILE%` and `~` are expanded. Unlike a launcher, this also applies when the app is started from a shortcut, from autostart, or by a plain double-click on the exe. Every ini key has a command-line counterpart, and a flag always wins over the file. Note the on/off keys only have a flag that switches them *on*: `refine`, `log_transcripts` and `output = type` can be set from the command line but not unset there, so to turn one back off, edit the file.
 
 WhisperPaste reads the **first** of these that exists and then stops — never two merged:
 
 1. the file named by `--config PATH` (if you name one that does not exist, it says so and starts with the built-in defaults rather than silently falling through),
-2. `whisper-paste.ini` next to `WhisperPaste.exe`,
+2. `whisper-paste.ini` next to `WhisperPaste.exe` — or, on a source install, in the repository root,
 3. `%LOCALAPPDATA%\WhisperPaste\whisper-paste.ini` — a personal copy that survives replacing the folder with a newer release. Because the ZIP ships the copy in 2, that one wins; delete or rename it for the personal copy to take effect.
 
 A broken settings file never stops the app: a mistyped key or a bad value is logged and the default is used, and a file that cannot be read or parsed at all is logged, shown in a dialog, and skipped.
@@ -101,37 +157,21 @@ A broken settings file never stops the app: a mistyped key or a bad value is log
 
 ### Windows SmartScreen and antivirus
 
-**The executable is not code-signed.** The first launch therefore shows SmartScreen's "Windows protected your PC" dialog; choose **More info → Run anyway**. If you downloaded the ZIP with a browser it also carries the mark of the web, which the extracted files inherit — `Unblock-File .\WhisperPaste-1.0.0-win64-small.zip` before extracting avoids that.
+**The executable is not code-signed** — there is no code-signing certificate behind this project, which is also why the exe isn't distributed as a download here (see [Portable build](#portable-build)). Even a build you made yourself shows SmartScreen's "Windows protected your PC" dialog on first launch; choose **More info → Run anyway**. If the ZIP reached this machine via a browser download (for instance, you built it elsewhere and copied it over) it also carries the mark of the web, which the extracted files inherit — `Unblock-File` on the ZIP before extracting avoids that.
 
 **Some antivirus engines will flag it, and that is not surprising.** A global hotkey genuinely is a `WH_KEYBOARD_LL` low-level keyboard hook, and the app genuinely writes the clipboard and injects `Ctrl+V`. Heuristically that is the shape of a keylogger; a scanner cannot tell from the binary that the keystrokes are never recorded. Being a large unsigned PyInstaller bundle does not help either.
 
 This README will not tell you the warnings are wrong, and nobody can promise you a clean scan. What is offered instead is evidence you can check yourself:
 
-- **The SHA-256 published with each release** tells you that you have the file the maintainer built, not something rewritten in transit.
+- **`scripts\build.ps1` is the build** — the only one. It is in this repository, it involves no private tooling, key or build server, and it prints the resulting ZIP's SHA-256 when it finishes, so you know exactly what you built and can reproduce it.
 - **`BUILD-INFO.txt` inside the ZIP** records the git commit, the model repository and revision, the Python and PyInstaller versions, and the SHA-256 of `requirements-build.txt`.
-- **`scripts\build.ps1` is the build.** It is in this repository, it involves no private tooling, key or build server, and you can rebuild the artifact yourself from source and compare.
 - **Every dependency is pinned by content, not just by version.** `requirements-build.txt` carries a SHA-256 for each wheel and the build installs with pip's `--require-hashes`, so a wheel whose bytes differ from the ones this project was built and tested against fails the build instead of being silently baked into the exe. The Whisper model is pinned to a HuggingFace commit SHA and then SHA-256-verified separately, in PowerShell, rather than by the library that downloaded it.
 
-Two honest limits on all of that: a rebuild will not be *bit-identical* to the published ZIP — PyInstaller embeds timestamps and paths, so compare behaviour and contents, not the ZIP's own hash. And none of this proves the source itself is trustworthy; it only proves the binary matches the source.
+One honest limit on all of that: none of it proves the source itself is trustworthy; it only proves the binary matches the source you built it from.
 
-Maintainers should publish a VirusTotal result alongside the SHA-256 with every release.
+If you ever hand a built copy to someone else, publish its SHA-256 (and ideally a VirusTotal scan) alongside it, so they have the same thing to check.
 
 If you would rather not run an unsigned binary at all, **install from source** — every dependency then comes from PyPI in the ordinary way and nothing is a prebuilt binary from this project.
-
-## Install from source
-
-```powershell
-git clone https://github.com/ocruces/whisper-paste.git
-cd whisper-paste
-scripts\install.ps1      # creates .venv and installs dependencies
-scripts\run.ps1          # launches the tray app
-```
-
-You can also double-click `scripts\install.bat` and `scripts\run.bat` if you prefer not to use a PowerShell prompt.
-
-- Contributors: `scripts\install.ps1 -Dev` also installs the test dependencies.
-- Tray-only session (no console window): `scripts\run.ps1 -NoConsole` — quit it from the tray icon.
-- Extra flags pass straight through: `scripts\run.ps1 --model small --lang en`.
 
 ## Usage
 
@@ -143,6 +183,8 @@ You can also double-click `scripts\install.bat` and `scripts\run.bat` if you pre
 If you forget the second press, recording auto-stops and is processed after 120 seconds.
 
 **Quit:** right-click the tray icon and choose **Quit**, or press `Ctrl+C` in the console if you started it from one (the portable `WhisperPaste.exe` has no console — quit it from the tray).
+
+Tip: the icon starts in the hidden-icons tray overflow — see [Pin the icon to your taskbar](#pin-the-icon-to-your-taskbar) in Quick start to keep it always visible.
 
 ### Tray icon states
 
@@ -172,7 +214,7 @@ Pass flags after `scripts\run.ps1` (or `python -m whisper_paste`, or `WhisperPas
 
 Flags can be combined, e.g. `scripts\run.ps1 --gpu --lang en --refine`.
 
-**Portable build: `--model` and your own models.** In the frozen exe, a bare model name is resolved against `models\NAME` next to `WhisperPaste.exe` before anything else. The ZIP ships one model there (`small` unless the release says otherwise), which is why the first run is offline. Any other bare name — `--model medium`, say — finds nothing bundled and falls through to the usual HuggingFace download, so it needs internet once and then caches under `~/.cache/huggingface/hub/` like a source install does.
+**Portable build: `--model` and your own models.** In the frozen exe, a bare model name is resolved against `models\NAME` next to `WhisperPaste.exe` before anything else. The ZIP ships one model there (`small` unless you built with `-Model`), which is why the first run is offline. Any other bare name — `--model medium`, say — finds nothing bundled and falls through to the usual HuggingFace download, so it needs internet once and then caches under `~/.cache/huggingface/hub/` like a source install does.
 
 That lookup is also the supported way to use a model the release did not ship: put a CTranslate2-converted Whisper model directory (`model.bin`, `config.json`, `tokenizer.json`, `vocabulary.txt`) into `models\my-model\` next to the exe and run
 
@@ -224,7 +266,7 @@ pip install pywhispercpp --no-binary pywhispercpp
 
 Run with `--gpu` and check the console output for Vulkan device messages. If you only see CPU references, the build didn't pick up Vulkan.
 
-whisper.cpp models are stored under `C:\Users\<username>\AppData\Local\pywhispercpp\pywhispercpp\models\` (e.g. `ggml-small.bin`). faster-whisper models are cached under `~/.cache/huggingface/hub/`.
+whisper.cpp models are stored under `%LOCALAPPDATA%\pywhispercpp\pywhispercpp\models\` (e.g. `ggml-small.bin`). faster-whisper models are cached under `~/.cache/huggingface/hub/`.
 
 ## Text refinement (optional)
 
@@ -250,8 +292,8 @@ The prompt (`REFINER_PROMPT` in `config.py`) asks for paragraphs, bulleted and n
 - **Portable ZIP: start with `debug-console.cmd`.** `WhisperPaste.exe` is a windowed program — it has no console even when you launch it from one, so it can never print an error at you. `debug-console.cmd` runs the identical `WhisperPaste-debug.exe`, forwards any flags you give it, and keeps the window open with the exit code (`1` = already running, `2` = bad command line or `--gpu`). This is the first thing to try when a double-click appears to do nothing.
 - **Logs:** the app logs to a rotating file at `%LOCALAPPDATA%\WhisperPaste\logs\whisper-paste.log` (the resolved path is logged at startup; override with `--log-dir`), and to the console when it has one. This is the first place to look whenever there is no terminal — the portable `WhisperPaste.exe` and `scripts\run.ps1 -NoConsole` both run without one. Logs hold no dictated text unless you pass `--log-transcripts`, so they are safe to share.
 - **The tray icon never turns green** (the tooltip stays on "Loading model…", or shows a model-load error). The model failed to load or is still loading. Hover the icon for the short reason, then read `%LOCALAPPDATA%\WhisperPaste\logs\whisper-paste.log` for the full traceback — a missing `models\` folder, a model name that isn't bundled and can't be downloaded, or a disk/permission problem in the unpack location are the usual causes.
-- **The hotkey does nothing anywhere, or triggers a different program.** Another program registered the same combination first, so it never reaches WhisperPaste. The fix is a different combination via `--hotkey ctrl+alt+d` or `hotkey = ctrl+alt+d` in `whisper-paste.ini`. A combination WhisperPaste cannot parse (a misspelled key name like `ctrl+shit+space`) is no longer fatal: it is logged, and the default `ctrl+shift+space` is used instead; the portable build shows this in a dialog. The Windows key cannot be used at all: it was tested on real hardware and does not work, because Windows handles those combinations above the low-level keyboard hook this app installs — the hotkey registered successfully and then silently never fired. WhisperPaste now refuses any combination that contains the Windows key and starts on the default instead, with the reason logged.
-- **The hotkey does nothing in one particular window.** If that window belongs to a program running as administrator (Task Manager, an elevated terminal, some installers), Windows' UIPI blocks it: a normally-privileged process cannot hook input destined for an elevated window, nor inject `Ctrl+V` into one. WhisperPaste keeps working everywhere else. To dictate into elevated windows, run WhisperPaste as administrator too — but understand what you are agreeing to: an unsigned binary then holds a low-level keyboard hook and clipboard access with administrator rights. Only do it from a folder that only you can write to (see [Download](#download-portable-zip)), and prefer not to do it at all on a machine you share.
+- **The hotkey does nothing anywhere, or triggers a different program.** Another program registered the same combination first, so it never reaches WhisperPaste. The fix is a different combination via `--hotkey ctrl+alt+d` or `hotkey = ctrl+alt+d` in `whisper-paste.ini`. A combination WhisperPaste cannot parse (a misspelled key name like `ctrl+shit+space`) is not fatal: it is logged, and the default `ctrl+shift+space` is used instead; the portable build shows this in a dialog. The Windows key cannot be used at all — tested on real hardware, it does not work, because Windows handles those combinations above the low-level keyboard hook this app installs: the hotkey registers successfully and then silently never fires. WhisperPaste refuses any combination containing the Windows key and starts on the default instead, with the reason logged.
+- **The hotkey does nothing in one particular window.** If that window belongs to a program running as administrator (Task Manager, an elevated terminal, some installers), Windows' UIPI blocks it: a normally-privileged process cannot hook input destined for an elevated window, nor inject `Ctrl+V` into one. WhisperPaste keeps working everywhere else. To dictate into elevated windows, run WhisperPaste as administrator too — but understand what you are agreeing to: an unsigned binary then holds a low-level keyboard hook and clipboard access with administrator rights. Only do it from a folder that only you can write to (see [Portable build](#portable-build)), and prefer not to do it at all on a machine you share.
 - **SmartScreen blocked it** ("Windows protected your PC"). The build is unsigned; choose **More info → Run anyway**, and see [Windows SmartScreen and antivirus](#windows-smartscreen-and-antivirus) for what you can verify first.
 - **"WhisperPaste is already running — exiting."** The single-instance guard found another running copy. Quit the existing tray instance first (or check that a previous `-NoConsole` or portable launch is still running); in the portable build this is shown as a dialog too.
 - **Microphone errors** are shown in the tray icon tooltip (hover over the icon), and the app stays idle so you can fix the mic and try again.
@@ -315,4 +357,4 @@ scripts\build.ps1 -Languages en,es,fr,pt-br  # which WhisperPaste-<lang>.cmd lau
 
 WhisperPaste is released under the [MIT License](LICENSE). It depends on [pystray](https://github.com/moses-palmer/pystray) (LGPLv3) as an unmodified library dependency; all other dependencies are permissively licensed (MIT / BSD / PSF / HPND).
 
-The portable ZIP additionally *redistributes* compiled copies of those dependencies, so it ships a `licenses\` folder generated at build time from the exact package versions in that build (36 of them), plus `THIRD-PARTY-NOTICES.md`. Two of them are copyleft: **pystray** (LGPLv3), whose complete corresponding source as bundled is included under `licenses\pystray\src\`, and the **FFmpeg** shared libraries carried by PyAV (LGPL 2.1+), shipped unmodified as separate DLLs in `_internal\av.libs\`. Both are relinkable by rebuilding the bundle with the public `scripts\build.ps1`, which uses no private tooling, key or build server. Whisper model weights are covered by their own HuggingFace model page, not by any of the above.
+The portable ZIP additionally *redistributes* compiled copies of those dependencies, so it ships a `licenses\` folder generated at build time from the exact package versions in that build, plus `THIRD-PARTY-NOTICES.md`. Two of them are copyleft: **pystray** (LGPLv3), whose complete corresponding source as bundled is included under `licenses\pystray\src\`, and the **FFmpeg** shared libraries carried by PyAV (LGPL 2.1+), shipped unmodified as separate DLLs in `_internal\av.libs\`. Both are relinkable by rebuilding the bundle with the public `scripts\build.ps1`, which uses no private tooling, key or build server. Whisper model weights are covered by their own HuggingFace model page, not by any of the above.
