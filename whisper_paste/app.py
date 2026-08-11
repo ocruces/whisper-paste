@@ -484,7 +484,7 @@ def _resolve_log_dir():
     """Where the rotating log lives: config.LOG_DIR, else a private per-user dir.
 
     Defaulting outside the repository is deliberate — a clone under a shared
-    path (e.g. C:\\data) inherits that location's ACL, and one under Documents or
+    path (e.g. C:\Shared) inherits that location's ACL, and one under Documents or
     Desktop gets swept into OneDrive folder backup. %LOCALAPPDATA% is neither.
     No explicit DACL is set: that directory already inherits owner-only
     permissions.

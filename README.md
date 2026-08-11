@@ -229,7 +229,7 @@ A name containing `/` or `\` is never treated as a bundled model — a HuggingFa
 Audio never leaves the machine: transcription is local, and `--refine` talks only to Ollama on `localhost`.
 
 - **Logs contain no dictated text.** The log records metadata (character counts, timings, errors), not what you said. `--log-transcripts` turns content logging on for debugging — it makes the log a permanent plaintext record of everything you dictate, so leave it off unless you need it, and delete the log afterwards.
-- **The log lives outside the repository**, in `%LOCALAPPDATA%\WhisperPaste\logs`. That keeps its file permissions from depending on where you cloned the project (a clone under a shared path such as `C:\data` inherits that location's ACL) and keeps it out of OneDrive folder backup.
+- **The log lives outside the repository**, in `%LOCALAPPDATA%\WhisperPaste\logs`. That keeps its file permissions from depending on where you cloned the project (a clone under a shared path such as `C:\Shared` inherits that location's ACL) and keeps it out of OneDrive folder backup.
 - **The transcript is cleared from the clipboard** after the paste, even when the pre-paste snapshot failed.
 - **Refiner output is validated** before it is pasted (see below).
 

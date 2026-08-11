@@ -80,7 +80,7 @@ if the victim followed the troubleshooting advice about elevation.
 same-user adversary already executes as the victim and gains nothing by planting
 a DLL. Nor is this new: the source install put a `.venv` full of DLLs and `.pyd`
 files in a user-chosen directory too, and that spec's own Finding #1 records the
-repository living under `C:\data` in the real deployment. The branch reproduces
+repository living under `C:\Shared` in the real deployment. The branch reproduces
 an existing, already-accepted property rather than introducing one.
 
 **What was done anyway.** The README now recommends extracting under a

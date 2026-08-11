@@ -39,7 +39,7 @@ listening on `127.0.0.1:11434` when `--refine` is enabled.
 
 | # | Finding | Severity | Fixed by |
 |---|---------|----------|----------|
-| 1 | Every transcript is written verbatim to a rotating plaintext log, forever | High as originally deployed (repo under `C:\data`, log readable by `BUILTIN\Users`); Low–Medium under a protected profile | Changes A + B |
+| 1 | Every transcript is written verbatim to a rotating plaintext log, forever | High as originally deployed (repo under `C:\Shared`, log readable by `BUILTIN\Users`); Low–Medium under a protected profile | Changes A + B |
 | 2 | Transcript is stranded on the system clipboard when the snapshot fails | Medium | Change C |
 | 3 | Refiner pastes whatever answers on `127.0.0.1:11434` with no validation | Low–Medium (needs local code execution) | Changes D + F |
 
@@ -105,7 +105,7 @@ to go open it (and therefore to paste it into issues and support chats).
 **Problem.** `_setup_logging()` computes `project_root` from `__file__` and
 writes to `<project_root>/logs/`. The log's protection is therefore a function
 of *where the user happened to clone the repo* — which is exactly how the
-reviewed machine ended up with a log under `C:\data` inheriting `C:\`'s
+reviewed machine ended up with a log under `C:\Shared` inheriting `C:\`'s
 `BUILTIN\Users:(RX)` ACL. A clone under `Documents`/`Desktop` would additionally
 be swept up by OneDrive Known Folder Backup, uploading transcripts to the cloud
 and breaking the README's "100% local, no cloud" claim.

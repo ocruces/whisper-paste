@@ -11,7 +11,7 @@ __pycache__/
 *.swp
 .DS_Store
 .superpowers/
-.claude/worktrees/
+.claude/
 logs/
 
 # Personal settings for a source run: settings._base_dir() is the repo root when
