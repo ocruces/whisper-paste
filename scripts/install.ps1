@@ -90,11 +90,13 @@ if (-not (Test-Path $venvPython)) {
     exit 1
 }
 
-# Upgrade pip so wheels resolve cleanly, then install runtime deps.
-Write-Host "Upgrading pip ..."
-& $venvPython -m pip install --upgrade pip
+# Upgrade both packaging tools: Python 3.11 seeds an old setuptools, and the
+# dependency audit checks the whole installed environment rather than only the
+# modules imported by the app.
+Write-Host "Upgrading pip and setuptools ..."
+& $venvPython -m pip install --upgrade pip setuptools
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Failed to upgrade pip." -ForegroundColor Red
+    Write-Host "ERROR: Failed to upgrade pip and setuptools." -ForegroundColor Red
     exit 1
 }
 

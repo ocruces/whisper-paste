@@ -33,6 +33,7 @@ ICON = os.path.join(PACKAGING, "whisper-paste.ico")
 LAUNCHER_TEMPLATE = os.path.join(PACKAGING, "launcher-template.cmd")
 SETTINGS_TEMPLATE = os.path.join(PACKAGING, "whisper-paste.ini")
 BUILD_PS1 = os.path.join(REPO_ROOT, "scripts", "build.ps1")
+INSTALL_PS1 = os.path.join(REPO_ROOT, "scripts", "install.ps1")
 
 
 def _read(path):
@@ -100,6 +101,23 @@ def test_every_build_requirement_carries_a_hash():
 
     for line in _requirement_lines():
         assert hash_re.search(line), f"no --hash=sha256:<64 hex chars> on: {line}"
+
+
+def test_build_requirements_include_setuptools_for_the_environment_audit():
+    """A Python 3.11 venv seeds setuptools, and audit.ps1 scans the whole venv."""
+    assert any(line.startswith("setuptools==") for line in _requirement_lines())
+
+
+def test_source_setup_upgrades_both_audited_packaging_tools():
+    """Fresh Python 3.11 venvs seed vulnerable setuptools and an old pip."""
+    commands = [
+        line for line in _read(INSTALL_PS1).splitlines()
+        if "-m pip install --upgrade" in line and " -r " not in line
+        and not line.lstrip().startswith("#")
+    ]
+
+    assert len(commands) == 1
+    assert re.search(r"--upgrade\s+pip\s+setuptools(?:\s|$)", commands[0])
 
 
 def test_build_requirements_are_not_empty():

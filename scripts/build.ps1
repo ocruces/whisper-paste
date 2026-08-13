@@ -63,6 +63,7 @@ $manifestPath    = Join-Path $packaging 'models.json'
 $fetchScript     = Join-Path $packaging 'fetch_model.py'
 $launcherTpl     = Join-Path $packaging 'launcher-template.cmd'
 $settingsTpl     = Join-Path $packaging 'whisper-paste.ini'
+$auditScript     = Join-Path $PSScriptRoot 'audit.ps1'
 $reqBuild        = Join-Path $root 'requirements-build.txt'
 $buildDir        = Join-Path $root 'build'
 $buildVenv       = Join-Path $buildDir 'venv'
@@ -92,7 +93,7 @@ $appVersion = & {
 Write-Host "Version: $appVersion  Commit: $gitCommit  Model: $Model"
 
 foreach ($required in @($specPath, $manifestPath, $fetchScript, $reqBuild,
-                        $launcherTpl, $settingsTpl)) {
+                        $launcherTpl, $settingsTpl, $auditScript)) {
     if (-not (Test-Path $required)) {
         Write-Host "ERROR: missing build input: $required" -ForegroundColor Red
         exit 1
@@ -221,16 +222,10 @@ if ($venvUsable) {
     # per package, pinning the exact wheel bytes pip installs rather than just
     # a version string that a compromised or re-uploaded index could serve
     # different content under. --no-deps is required, not merely safe: the file
-    # is a full pip-freeze transitive closure, but `pip freeze` deliberately
-    # omits venv plumbing, and both ctranslate2 and pyinstaller declare an
-    # unconditional Requires-Dist on setuptools. Without --no-deps, pip would
-    # try to resolve setuptools, find no pin and no hash for it, and refuse the
-    # whole install - hash-checking mode will not resolve anything it cannot
-    # verify. With --no-deps it never looks, and the build works because
-    # `python -m venv` on 3.11 still provisions setuptools itself. That is a
-    # real dependency on BUILD_PYTHON staying at 3.11: 3.12+ dropped setuptools
-    # from new venvs, so raising that marker means adding setuptools to the
-    # pins, not just regenerating them. --isolated stops a stray
+    # is a full pip-freeze transitive closure, with setuptools explicitly added
+    # because Python 3.11 seeds it and the dependency audit scans the full build
+    # environment. Without --no-deps, any undeclared dependency would be
+    # resolved outside that closed, hash-pinned set. --isolated stops a stray
     # %APPDATA%\pip\pip.ini or an inherited PIP_INDEX_URL on the build machine
     # from quietly redirecting where these hashes get checked against - a
     # hash-checked install from the wrong index is not a security property,
@@ -250,6 +245,15 @@ if ($venvUsable) {
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: pywhispercpp is importable in the build venv." -ForegroundColor Red
     Write-Host "The build venv is stale or contaminated. Rerun with -Clean."
+    exit 1
+}
+
+# The scanner is isolated in build\audit-venv; it audits this exact installed
+# environment without adding itself or its dependencies to the shipped ZIP.
+& powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+    -File $auditScript -Venv $buildVenv
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: build dependency audit failed." -ForegroundColor Red
     exit 1
 }
 

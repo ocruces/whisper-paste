@@ -15,9 +15,10 @@
 #
 #   py -3.11 -m venv .venv-pin
 #   .venv-pin\Scripts\pip install -r requirements.txt pyinstaller
-#   .venv-pin\Scripts\pip freeze          # NOT --all: pip/setuptools/wheel are
-#                                         # venv plumbing, not build inputs, and
-#                                         # pinning them fights the venv module
+#   .venv-pin\Scripts\pip freeze          # dependency closure
+#   .venv-pin\Scripts\python -c "import importlib.metadata as m; print('setuptools==' + m.version('setuptools'))"
+#                                         # append this pin too: Python 3.11
+#                                         # seeds it; audit scans the full venv
 #
 # That produces the pin set (name==version) below. The --hash lines are a
 # separate pass over that exact set, run outside the repo so nothing untracked
@@ -123,6 +124,8 @@ pywin32-ctypes==0.2.3 \
     --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
 PyYAML==6.0.3 \
     --hash=sha256:9f3bfb4965eb874431221a3ff3fdcddc7e74e3b07799e0e84ca4a0f867d449bf
+setuptools==83.0.0 \
+    --hash=sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
 sounddevice==0.5.5 \

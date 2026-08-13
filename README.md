@@ -317,7 +317,7 @@ whisper-paste/
 │   ├── settings.py         # whisper-paste.ini reader (defaults < ini < CLI flags)
 │   └── config.py           # defaults (mutated by the ini and CLI flags at startup)
 ├── packaging/              # portable build: spec, model manifest, icon, notices
-├── scripts/                # install.ps1 / run.ps1 / build.ps1 (+ .bat wrappers)
+├── scripts/                # install / run / audit / build PowerShell + .bat wrappers
 ├── tests/                  # pytest suite
 ├── pyproject.toml          # package metadata, console script
 ├── requirements.txt        # runtime dependencies
@@ -330,13 +330,29 @@ Install the dev dependencies and run the test suite from the virtual environment
 ```powershell
 scripts\install.ps1 -Dev
 .venv\Scripts\python.exe -m pytest
+scripts\audit.bat
 ```
+
+`scripts\audit.bat` checks the packages actually installed in `.venv` against
+current published vulnerability advisories. Run it after dependency changes
+and before sharing a source installation with other users. It needs internet
+access and fails if vulnerabilities are found or the audit cannot complete;
+the pinned scanner is cached separately in `build\audit-venv` and never
+changes `.venv`. Upgrade the packages named in a finding and rerun the audit;
+do not blindly reinstall `pywhispercpp` if you built it locally for Vulkan,
+because the ordinary PyPI wheel is CPU-only.
+
+If `.venv` is activated, `pip-audit` may warn that its isolated Python differs
+from the active virtual environment. This is expected: the script still audits
+`.venv` explicitly while keeping the scanner separate. Run `deactivate` first
+to silence the warning; do not set `PIPAPI_PYTHON_LOCATION`.
 
 After an editable install (`.venv\Scripts\python.exe -m pip install -e .`), the console script `whisper-paste` becomes available as an equivalent entry point to `python -m whisper_paste`.
 
 ### Building the portable ZIP
 
-From a clean clone, one command does everything — build venv, model download, PyInstaller, licence harvest, ZIP:
+From a clean clone, one command does everything — build venv, dependency
+audit, model download, PyInstaller, licence harvest, ZIP:
 
 ```powershell
 scripts\build.ps1                            # → dist\WhisperPaste-1.0.0-win64-small.zip
@@ -345,9 +361,10 @@ scripts\build.ps1 -Languages en,es,fr,pt-br  # which WhisperPaste-<lang>.cmd lau
 ```
 
 - **`-Model` must name a key in `packaging\models.json`** (`small` is the only one pinned today, and the default). Adding another means running `scripts\build.ps1 -Model <name> -WriteHashes`, checking the printed repository, revision and SHA-256 values against huggingface.co, and committing them to that manifest.
-- **Python 3.11 is required.** `requirements-build.txt` carries a `BUILD_PYTHON = 3.11` line and the script refuses any other minor version unless you pass `-AllowPythonMismatch`. A different Python minor resolves different wheels for identical version strings, so the artifact would quietly stop being the one that was tested — and now that each wheel is pinned by SHA-256, it would not build at all: the hashes name specific `cp311` / `win_amd64` files. Moving to another minor means regenerating the hashes, and also adding `setuptools` to the pins, because 3.12 stopped provisioning it into new venvs and `ctranslate2` and `pyinstaller` both need it.
+- **Python 3.11 is required.** `requirements-build.txt` carries a `BUILD_PYTHON = 3.11` line and the script refuses any other minor version unless you pass `-AllowPythonMismatch`. A different Python minor resolves different wheels for identical version strings, so the artifact would quietly stop being the one that was tested — and now that each wheel is pinned by SHA-256, it would not build at all: the hashes name specific `cp311` / `win_amd64` files.
 - **Dependencies are hash-pinned.** The build installs with `--require-hashes --no-deps --isolated`, so a wheel whose bytes do not match `requirements-build.txt` fails the build rather than reaching the exe, and a stray `pip.ini` or inherited `PIP_INDEX_URL` on the build machine cannot redirect where those wheels come from. Regenerating the file means redoing the procedure documented in its header, not editing one line.
 - **Your `.venv` is never touched.** The build works in `build\venv`, deliberately not the development venv — that is what keeps a locally rebuilt `pywhispercpp`, or anything else a contributor happens to have installed, out of a shipped ZIP.
+- **Known vulnerable dependencies stop the build.** The build runs `scripts\audit.ps1 -Venv build\venv` before downloading the model or invoking PyInstaller. The scanner uses current advisory data from the internet and is isolated in `build\audit-venv`, outside the shipped bundle.
 - **The model is verified, not just downloaded.** It lands in the `build\models` cache and is checked file by file against the SHA-256 values in `packaging\models.json`, in PowerShell, independently of the library that fetched it. `-Clean` never deletes that cache.
 - **`-Languages` decides which one-click launchers ship** (default `en,es`). Each code becomes a `WhisperPaste-<code>.cmd` expanded from `packaging\launcher-template.cmd`; codes are validated up front, and `-Languages ''` ships none. `packaging\whisper-paste.ini` is staged next to the exe on every build.
 - All parameters: `-Model`, `-Clean` (rebuild the venv, work dir and dist tree), `-SkipZip` (leave `dist\WhisperPaste\` uncompressed while iterating), `-Languages`, `-AllowPythonMismatch`, `-WriteHashes`, `-OutputDir`.
