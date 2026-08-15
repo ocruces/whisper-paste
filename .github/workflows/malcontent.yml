@@ -13,7 +13,7 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           docker run --rm -v "$PWD:/repo" cgr.dev/chainguard/malcontent:latest scan /repo --format markdown \
             >> "$GITHUB_STEP_SUMMARY"
