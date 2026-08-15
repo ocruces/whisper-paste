@@ -11,5 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker run --rm -v "$PWD:/repo" cgr.dev/chainguard/malcontent:latest scan /repo
-        continue-on-error: true
+      - run: |
+          docker run --rm -v "$PWD:/repo" cgr.dev/chainguard/malcontent:latest scan /repo --format markdown \
+            >> "$GITHUB_STEP_SUMMARY"

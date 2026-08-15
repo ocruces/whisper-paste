@@ -27,3 +27,11 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-results.sarif
+      - name: Fail on CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln
+          trivy-config: trivy.yaml
+          severity: CRITICAL
+          exit-code: "1"
