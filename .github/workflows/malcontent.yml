@@ -1,0 +1,19 @@
+name: malcontent
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - run: go install github.com/chainguard-dev/malcontent/cmd/mal@latest
+      - run: mal analyze .
+        continue-on-error: true
