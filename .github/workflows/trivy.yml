@@ -27,6 +27,24 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-results.sarif
+      - name: Trivy report (table)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          trivy-config: trivy.yaml
+          format: table
+          output: trivy-report.txt
+          severity: CRITICAL,HIGH
+      - name: Publish Trivy report to job summary
+        if: always()
+        run: |
+          {
+            echo "### Trivy findings"
+            echo '```'
+            cat trivy-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail on CRITICAL/HIGH vulnerabilities
         uses: aquasecurity/trivy-action@v0.36.0
         with:
