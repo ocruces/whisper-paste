@@ -1,0 +1,3 @@
+scan:
+  file-patterns:
+    - "pip:requirements-build\\.txt"
