@@ -19,7 +19,7 @@ jobs:
         with:
           scan-type: fs
           scanners: vuln,secret,misconfig
-          file-patterns: "pip:requirements-build\\.txt"
+          trivy-config: trivy.yaml
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
