@@ -166,8 +166,10 @@ def test_build_stops_when_dependency_audit_fails(tmp_path, venv_template):
     root = tmp_path / "repo"
     scripts = root / "scripts"
     packaging = root / "packaging"
+    resources = root / "whisper_paste" / "resources"
     scripts.mkdir(parents=True)
     packaging.mkdir()
+    resources.mkdir(parents=True)
     shutil.copy2(BUILD_SCRIPT, scripts / "build.ps1")
     probe = root / "audit-probe.txt"
     (scripts / "audit.ps1").write_text(
@@ -179,7 +181,7 @@ def test_build_stops_when_dependency_audit_fails(tmp_path, venv_template):
     for name in ("whisper-paste.spec", "fetch_model.py", "launcher-template.cmd",
                  "whisper-paste.ini"):
         (packaging / name).write_text("", encoding="utf-8")
-    (packaging / "models.json").write_text(
+    (resources / "models.json").write_text(
         json.dumps({"small": {"repo_id": "example/model", "revision": "a" * 40,
                               "sha256": {}}}),
         encoding="utf-8",
@@ -192,7 +194,6 @@ def test_build_stops_when_dependency_audit_fails(tmp_path, venv_template):
         hashlib.sha256(requirements.read_bytes()).hexdigest(), encoding="utf-8"
     )
     (root / "build" / "models" / "small").mkdir(parents=True)
-    (root / "whisper_paste").mkdir()
     (root / "whisper_paste" / "__init__.py").write_text(
         '__version__ = "1.0.0"\n', encoding="utf-8"
     )

@@ -12,7 +12,7 @@
     unpinned or extra packages such as pywhispercpp - can never leak into a
     shipped artifact.
 .PARAMETER Model
-    Which model to bundle. Must be a key in packaging\models.json. Default: small.
+    Which model to bundle. Must be a key in whisper_paste\resources\models.json. Default: small.
 .PARAMETER Clean
     Remove the build venv, the PyInstaller work directory and the previous dist
     tree first. Never removes build\models - that is the download cache, and
@@ -24,7 +24,7 @@
     in requirements-build.txt.
 .PARAMETER WriteHashes
     Print manifest-ready SHA-256 JSON for the downloaded model instead of
-    verifying it. For adding a new model to packaging\models.json.
+    verifying it. For adding a new model to whisper_paste\resources\models.json.
 .PARAMETER OutputDir
     Where to write the ZIP. Default: dist.
 .PARAMETER Languages
@@ -59,7 +59,7 @@ $root = Split-Path -Parent $PSScriptRoot
 
 $packaging       = Join-Path $root 'packaging'
 $specPath        = Join-Path $packaging 'whisper-paste.spec'
-$manifestPath    = Join-Path $packaging 'models.json'
+$manifestPath    = Join-Path $root 'whisper_paste\resources\models.json'
 $fetchScript     = Join-Path $packaging 'fetch_model.py'
 $launcherTpl     = Join-Path $packaging 'launcher-template.cmd'
 $settingsTpl     = Join-Path $packaging 'whisper-paste.ini'
@@ -260,13 +260,58 @@ if ($LASTEXITCODE -ne 0) {
 # ------------------------------------------------- 8. fetch + verify model
 $modelDir = Join-Path $modelCache $Model
 $expected = $modelEntry.sha256
+$expectedFiles = @($expected.PSObject.Properties |
+    Sort-Object Name | ForEach-Object { $_.Name })
+
+function Remove-HuggingFaceCache {
+    param([string]$Dir)
+    if (-not (Test-Path $Dir -PathType Container)) { return }
+
+    $cacheDirs = @(Get-ChildItem -LiteralPath $Dir -Recurse -Force -Directory |
+        Where-Object { $_.Name -eq '.cache' } |
+        Sort-Object FullName -Descending)
+    foreach ($cacheDir in $cacheDirs) {
+        Remove-Item -LiteralPath $cacheDir.FullName -Recurse -Force
+    }
+}
+
+function Get-ModelPayloadFiles {
+    param([string]$Dir)
+    if (-not (Test-Path $Dir -PathType Container)) { return @() }
+
+    $base = (Get-Item -LiteralPath $Dir).FullName.TrimEnd('\')
+    return @(Get-ChildItem -LiteralPath $Dir -Recurse -File -Force |
+        ForEach-Object {
+            $_.FullName.Substring($base.Length).TrimStart('\', '/').Replace('\', '/')
+        })
+}
 
 function Test-ModelHashes {
     param([string]$Dir)
-    foreach ($prop in $expected.PSObject.Properties) {
-        $f = Join-Path $Dir $prop.Name
-        if (-not (Test-Path $f)) { return $false }
-        if ((Get-FileHash $f -Algorithm SHA256).Hash -ne $prop.Value.ToUpper()) { return $false }
+    if (-not (Test-Path $Dir -PathType Container)) { return $false }
+
+    # huggingface_hub may leave local_dir metadata behind. It is not a model
+    # input and must not be copied into the portable ZIP.
+    Remove-HuggingFaceCache -Dir $Dir
+    $actualFiles = @(Get-ModelPayloadFiles -Dir $Dir)
+    $missing = @($expectedFiles | Where-Object { $actualFiles -notcontains $_ })
+    $unexpected = @($actualFiles | Where-Object { $expectedFiles -notcontains $_ })
+    if ($missing.Count -gt 0 -or $unexpected.Count -gt 0) {
+        if ($missing.Count -gt 0) {
+            Write-Host "ERROR: model payload is missing: $($missing -join ', ')" -ForegroundColor Red
+        }
+        if ($unexpected.Count -gt 0) {
+            Write-Host "ERROR: model payload contains unexpected files: $($unexpected -join ', ')" -ForegroundColor Red
+        }
+        return $false
+    }
+
+    foreach ($filename in $expectedFiles) {
+        $f = Join-Path $Dir ($filename.Replace('/', '\'))
+        $prop = $expected.PSObject.Properties[$filename]
+        if ((Get-FileHash $f -Algorithm SHA256).Hash -ne $prop.Value.ToUpper()) {
+            return $false
+        }
     }
     return $true
 }
@@ -288,8 +333,9 @@ if ((Test-Path $modelDir) -and (-not $WriteHashes) -and (Test-ModelHashes -Dir $
         Write-Host "WARNING: -WriteHashes SKIPS VERIFICATION." -ForegroundColor Yellow
         Write-Host "Review these against huggingface.co before committing them." -ForegroundColor Yellow
         Write-Host ""
-        $pairs = Get-ChildItem $modelDir -File | Sort-Object Name | ForEach-Object {
-            '      "{0}": "{1}"' -f $_.Name, (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+        $pairs = $expectedFiles | ForEach-Object {
+            $f = Join-Path $modelDir ($_.Replace('/', '\'))
+            '      "{0}": "{1}"' -f $_, (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
         }
         Write-Host ('  "{0}": {{' -f $Model)
         Write-Host ('    "repo_id": "{0}",' -f $modelEntry.repo_id)
@@ -311,7 +357,7 @@ if ((Test-Path $modelDir) -and (-not $WriteHashes) -and (Test-ModelHashes -Dir $
         exit 1
     }
 }
-Write-Host "Model verified against packaging\models.json." -ForegroundColor Green
+Write-Host "Model verified against whisper_paste\resources\models.json." -ForegroundColor Green
 
 # ------------------------------------------------------------ 9/10. build
 # Always removed: a stale tree hides files the spec no longer produces.
@@ -327,6 +373,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: PyInstaller failed." -ForegroundCo
 $required = @(
     'WhisperPaste.exe',
     'WhisperPaste-debug.exe',
+    '_internal\whisper_paste\resources\models.json',
     '_internal\faster_whisper\assets\silero_vad_v6.onnx',
     '_internal\ctranslate2\ctranslate2.dll',
     '_internal\onnxruntime\capi\onnxruntime_pybind11_state.pyd',
@@ -347,10 +394,22 @@ Write-Host "Bundle sanity checks passed." -ForegroundColor Green
 # --------------------------------------------------------- 12. model copy
 Write-Host "Copying model into the bundle ..."
 $modelDest = Join-Path $stageDir "models\$Model"
-& robocopy $modelDir $modelDest /E /NFL /NDL /NJH /NJS /NP | Out-Null
-# robocopy uses exit codes 0-7 for success (8+ are real failures).
-if ($LASTEXITCODE -ge 8) { Write-Host "ERROR: model copy failed (robocopy $LASTEXITCODE)." -ForegroundColor Red; exit 1 }
-$global:LASTEXITCODE = 0
+foreach ($filename in $expectedFiles) {
+    $relative = $filename.Replace('/', '\')
+    $source = Join-Path $modelDir $relative
+    $target = Join-Path $modelDest $relative
+    if (-not (Test-Path $source -PathType Leaf)) {
+        Write-Host "ERROR: expected model file disappeared: $filename" -ForegroundColor Red
+        exit 1
+    }
+    New-Item -ItemType Directory -Force (Split-Path -Parent $target) | Out-Null
+    try {
+        Copy-Item -LiteralPath $source -Destination $target -Force -ErrorAction Stop
+    } catch {
+        Write-Host "ERROR: model copy failed for $filename`: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+}
 
 # --------------------------------------------------------- 13. stage docs
 Copy-Item (Join-Path $root 'README.md')  $stageDir -Force

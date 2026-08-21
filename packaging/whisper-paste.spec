@@ -36,7 +36,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 REPO_ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
 PACKAGING = os.path.join(REPO_ROOT, "packaging")
 
-# The ONE mandatory data directive.
+# The mandatory data directives.
 #
 # faster_whisper/vad.py locates the Silero VAD model with a path computed
 # relative to its own __file__ (get_assets_path() -> faster_whisper/assets/),
@@ -47,6 +47,11 @@ PACKAGING = os.path.join(REPO_ROOT, "packaging")
 # case. Verified empirically: with the directive, the path get_assets_path()
 # computes under _MEIPASS is exactly where the asset lands.
 datas = collect_data_files("faster_whisper")
+
+# The runtime model cache and the build use this same packaged manifest. Keep
+# it in the frozen package so a source/frozen install cannot silently drift.
+_MANIFEST = os.path.join(REPO_ROOT, "whisper_paste", "resources", "models.json")
+datas.append((_MANIFEST, os.path.join("whisper_paste", "resources")))
 
 # Empty on purpose. Every one of the following was tried in a probe build and
 # proven REDUNDANT — the hooks already shipped with PyInstaller and
@@ -76,13 +81,13 @@ binaries = []
 # huggingface_hub 1.x is a lazy-loading package: its __init__ defines a
 # _SUBMOD_ATTRS map and resolves names via module __getattr__ on first access,
 # so PyInstaller's import graph sees almost nothing. The frozen app reaches it
-# only on the *download fallback* — `--model <something-not-bundled>`, where
-# faster_whisper calls download_model(). The spike did not exercise that path,
+# only on the manifest-limited download path — a manifest-listed model that is not bundled, where
+# model_cache.py calls snapshot_download(). The spike did not exercise that path,
 # and a ModuleNotFoundError there is invisible to every unit test in this repo
 # (they all stub the model). Collecting the submodules costs a few MB and
 # removes a failure mode that would otherwise first appear on a user's machine.
-# This is deliberate insurance, not cargo cult; the download fallback is
-# verified for real against a built bundle before the ZIP ships.
+# This is deliberate insurance, not cargo cult; the manifest-limited download path is
+# verified against a built bundle before the ZIP ships.
 hiddenimports = collect_submodules("huggingface_hub")
 
 excludes = [
@@ -105,7 +110,7 @@ excludes = [
     "pip",
     # NOT excluded, on purpose: hf_xet. huggingface_hub uses it to fetch
     # Xet-backed repos, which is how the Systran/faster-whisper-* repos are
-    # served, so removing it risks breaking the very download fallback the
+    # served, so removing it risks breaking the manifest-limited download path the
     # hiddenimports above exist to insure. 9 MB is not worth an untested
     # failure mode.
     #

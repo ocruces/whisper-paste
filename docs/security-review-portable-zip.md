@@ -30,7 +30,7 @@ Three areas were reviewed with that in mind:
    feeds the result to `WhisperModel`.
 3. **The build pipeline as a supply chain.** `scripts/build.ps1`,
    `requirements-build.txt`, `packaging/whisper-paste.spec`,
-   `packaging/fetch_model.py`, `packaging/models.json`, and the two `.cmd`
+   `packaging/fetch_model.py`, `whisper_paste/resources/models.json`, and the two `.cmd`
    templates — everything that decides what ends up inside the ZIP.
 
 ## 1. Threat model
@@ -194,16 +194,15 @@ Stated plainly, so that nobody later mistakes silence for absence:
   shipped template, and now visible in the tray tooltip while active — but a
   setting that persists across reboots is still a setting someone can forget
   they enabled.
-- **The runtime HuggingFace download fallback still exists.** `--model
-  <something-not-bundled>` reaches out to the network at load time. It is
-  `certifi`-backed TLS to a repo id the user typed, and it is the same code path
-  the source install has always used.
+- **Runtime model downloads are manifest-limited.** Source and frozen runs accept
+  only names in packaged `whisper_paste/resources/models.json`; unknown names and
+  Hugging Face repo IDs are rejected before a network-resolving model load.
 
 ## 5. If you are reviewing this branch again
 
 Re-verify rather than assume, in roughly this order of value:
 
-1. `packaging/models.json` — that every `revision` is still a 40-char commit SHA
+1. `whisper_paste/resources/models.json` — that every `revision` is still a 40-char commit SHA
    and every listed file still has a SHA-256.
 2. `requirements-build.txt` — that every pin still carries a `--hash`, and that
    `build.ps1` still passes `--require-hashes`. `tests/test_packaging.py` covers
