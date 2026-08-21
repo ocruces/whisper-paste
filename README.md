@@ -77,7 +77,7 @@ That's the whole thing. Everything below is reference material: flags, settings 
 
 - Python 3.10 or newer
 
-On a source install the first run downloads the Whisper model (the background preload fetches it). That needs internet **once**; after the model is cached, transcription is fully offline. The portable ZIP already contains the model, so it never does this.
+On a source install the first run downloads the default `small` Whisper model (the background preload fetches it). Only models listed in the packaged trusted manifest may be downloaded; an existing local model directory is also supported. The download needs internet **once**; after the model is cached, transcription is fully offline. The portable ZIP already contains its selected model, so it never does this.
 
 ## Install from source
 
@@ -200,7 +200,7 @@ Pass flags after `scripts\run.ps1` (or `python -m whisper_paste`, or `WhisperPas
 
 | Flag | Effect | Default |
 |------|--------|---------|
-| `--model NAME` | Whisper model to load (`tiny`, `base`, `small`, `medium`, `large-v3`, `distil-small.en`, …). In the portable build the name is looked up in `models\NAME` next to the exe first — see below. | `small` |
+| `--model NAME` | Whisper model to load. A bundled directory, an existing local directory, or a model name listed in `whisper_paste/resources/models.json` is accepted; unknown names and Hugging Face repo IDs are rejected. | `small` |
 | `--lang CODE` | **Forces** the transcription language (e.g. `en`, `es`, `fr`) — audio is transcribed as this language regardless of what is spoken, and Whisper skips its language-detection pass. | auto-detect |
 | `--hotkey COMBO` | Global hotkey as a `+`-joined key combination (e.g. `ctrl+alt+d`). | `ctrl+shift+space` |
 | `--gpu` | Use the whisper.cpp / Vulkan backend instead of faster-whisper on CPU (see [GPU support](#gpu-support-amd--non-nvidia)). **Source install only** — the portable build refuses the flag with an error dialog and exits with code 2. | off (CPU) |
@@ -214,7 +214,7 @@ Pass flags after `scripts\run.ps1` (or `python -m whisper_paste`, or `WhisperPas
 
 Flags can be combined, e.g. `scripts\run.ps1 --gpu --lang en --refine`.
 
-**Portable build: `--model` and your own models.** In the frozen exe, a bare model name is resolved against `models\NAME` next to `WhisperPaste.exe` before anything else. The ZIP ships one model there (`small` unless you built with `-Model`), which is why the first run is offline. Any other bare name — `--model medium`, say — finds nothing bundled and falls through to the usual HuggingFace download, so it needs internet once and then caches under `~/.cache/huggingface/hub/` like a source install does.
+**Model resolution and your own models.** In the frozen exe, a bare model name is resolved against `models\NAME` next to `WhisperPaste.exe` before anything else. The ZIP ships one model there (`small` unless you built with `-Model`), which is why the first run is offline. If it is not bundled, the name must be listed in the trusted manifest and is downloaded at its pinned revision into the managed cache; unknown names and Hugging Face repo IDs fail with an actionable error.
 
 That lookup is also the supported way to use a model the release did not ship: put a CTranslate2-converted Whisper model directory (`model.bin`, `config.json`, `tokenizer.json`, `vocabulary.txt`) into `models\my-model\` next to the exe and run
 
@@ -222,7 +222,7 @@ That lookup is also the supported way to use a model the release did not ship: p
 .\WhisperPaste.exe --model my-model
 ```
 
-A name containing `/` or `\` is never treated as a bundled model — a HuggingFace repo id (`Systran/faster-whisper-medium`) or a full path (`D:\models\my-model`) is passed to faster-whisper untouched.
+A name containing `/` or `\` is never treated as a bundled model. An existing full local path (`D:\models\my-model`) is accepted explicitly; a Hugging Face repo id (`Systran/faster-whisper-medium`) is rejected because it is not a pinned manifest entry.
 
 ## Privacy
 
@@ -266,7 +266,7 @@ pip install pywhispercpp --no-binary pywhispercpp
 
 Run with `--gpu` and check the console output for Vulkan device messages. If you only see CPU references, the build didn't pick up Vulkan.
 
-whisper.cpp models are stored under `%LOCALAPPDATA%\pywhispercpp\pywhispercpp\models\` (e.g. `ggml-small.bin`). faster-whisper models are cached under `~/.cache/huggingface/hub/`.
+whisper.cpp models are stored under `%LOCALAPPDATA%\pywhispercpp\pywhispercpp\models\` (e.g. `ggml-small.bin`). Manifest-managed faster-whisper models are cached under `%LOCALAPPDATA%\WhisperPaste\models\<model>\<revision>` (falling back to `~\WhisperPaste\models` when `%LOCALAPPDATA%` is unavailable). Existing local model directories are not copied or rehashed by the application.
 
 ## Text refinement (optional)
 
@@ -315,14 +315,14 @@ whisper-paste/
 │   ├── power_monitor.py    # re-register hotkey/tray after sleep/resume
 │   ├── bundle.py           # frozen-build awareness (bundled model dir, --gpu refusal)
 │   ├── settings.py         # whisper-paste.ini reader (defaults < ini < CLI flags)
+│   ├── resources/
+│   │   └── models.json      # verified model policy
 │   └── config.py           # defaults (mutated by the ini and CLI flags at startup)
-├── packaging/              # portable build: spec, model manifest, icon, notices
+├── packaging/              # portable build: spec, fetcher, icon, notices
 ├── scripts/                # install / run / audit / build PowerShell + .bat wrappers
 ├── tests/                  # pytest suite
-├── pyproject.toml          # package metadata, console script
-├── requirements.txt        # runtime dependencies
-├── requirements-build.txt  # fully pinned inputs for the portable build
-└── requirements-dev.txt    # test dependencies
+├── pyproject.toml          # package metadata, console script, dependencies/extras
+└── requirements-build.txt  # fully pinned inputs for the portable build
 ```
 
 Install the dev dependencies and run the test suite from the virtual environment:
@@ -360,12 +360,12 @@ scripts\build.ps1 -Model small -Clean        # same, from scratch
 scripts\build.ps1 -Languages en,es,fr,pt-br  # which WhisperPaste-<lang>.cmd launchers to ship
 ```
 
-- **`-Model` must name a key in `packaging\models.json`** (`small` is the only one pinned today, and the default). Adding another means running `scripts\build.ps1 -Model <name> -WriteHashes`, checking the printed repository, revision and SHA-256 values against huggingface.co, and committing them to that manifest.
+- **`-Model` must name a key in `whisper_paste\resources\models.json`**. The manifest covers the faster-whisper names and aliases `tiny.en`, `tiny`, `base.en`, `base`, `small.en`, `small`, `medium.en`, `medium`, `large-v1`, `large-v2`, `large-v3`, `large`, `distil-large-v2`, `distil-medium.en`, `distil-small.en`, `distil-large-v3`, `distil-large-v3.5`, `large-v3-turbo`, and `turbo`; `small` is the default. Adding another means running `scripts\build.ps1 -Model <name> -WriteHashes`, checking the printed repository, revision and SHA-256 values against huggingface.co, and committing them to that manifest.
 - **Python 3.11 is required.** `requirements-build.txt` carries a `BUILD_PYTHON = 3.11` line and the script refuses any other minor version unless you pass `-AllowPythonMismatch`. A different Python minor resolves different wheels for identical version strings, so the artifact would quietly stop being the one that was tested — and now that each wheel is pinned by SHA-256, it would not build at all: the hashes name specific `cp311` / `win_amd64` files.
 - **Dependencies are hash-pinned.** The build installs with `--require-hashes --no-deps --isolated`, so a wheel whose bytes do not match `requirements-build.txt` fails the build rather than reaching the exe, and a stray `pip.ini` or inherited `PIP_INDEX_URL` on the build machine cannot redirect where those wheels come from. Regenerating the file means redoing the procedure documented in its header, not editing one line.
 - **Your `.venv` is never touched.** The build works in `build\venv`, deliberately not the development venv — that is what keeps a locally rebuilt `pywhispercpp`, or anything else a contributor happens to have installed, out of a shipped ZIP.
 - **Known vulnerable dependencies stop the build.** The build runs `scripts\audit.ps1 -Venv build\venv` before downloading the model or invoking PyInstaller. The scanner uses current advisory data from the internet and is isolated in `build\audit-venv`, outside the shipped bundle.
-- **The model is verified, not just downloaded.** It lands in the `build\models` cache and is checked file by file against the SHA-256 values in `packaging\models.json`, in PowerShell, independently of the library that fetched it. `-Clean` never deletes that cache.
+- **The model is verified, not just downloaded.** It lands in the `build\models` cache and is checked file by file against the SHA-256 values in `whisper_paste\resources\models.json`, in PowerShell, independently of the library that fetched it. `-Clean` never deletes that cache. The fetch step removes Hugging Face `.cache` metadata and rejects any payload file not listed in the manifest.
 - **`-Languages` decides which one-click launchers ship** (default `en,es`). Each code becomes a `WhisperPaste-<code>.cmd` expanded from `packaging\launcher-template.cmd`; codes are validated up front, and `-Languages ''` ships none. `packaging\whisper-paste.ini` is staged next to the exe on every build.
 - All parameters: `-Model`, `-Clean` (rebuild the venv, work dir and dist tree), `-SkipZip` (leave `dist\WhisperPaste\` uncompressed while iterating), `-Languages`, `-AllowPythonMismatch`, `-WriteHashes`, `-OutputDir`.
 - PyInstaller itself takes about 90 seconds; a full run including the model download and compression takes a few minutes. The ZIP lands in `dist\` (or `-OutputDir`) and the script prints its SHA-256 at the end — publish that with the release, because the README tells users to check it.

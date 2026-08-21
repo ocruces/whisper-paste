@@ -1,8 +1,0 @@
-faster-whisper
-pywhispercpp
-sounddevice
-numpy
-keyboard
-pystray
-Pillow
-pywin32

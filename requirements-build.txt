@@ -1,7 +1,7 @@
 # Frozen dependency set for the portable ZIP build (scripts\build.ps1).
 #
-# This is NOT requirements.txt. requirements.txt lists what a source install
-# needs, unpinned, so a developer gets current versions. This file is the exact
+# This is NOT the source dependency declaration. pyproject.toml lists what a
+# source install needs, unpinned, so a developer gets current versions. This file is the exact
 # transitive closure that was measured to produce a working frozen build, so a
 # ZIP rebuilt in six months is the same ZIP.
 #
@@ -14,7 +14,7 @@
 # How this file was generated:
 #
 #   py -3.11 -m venv .venv-pin
-#   .venv-pin\Scripts\pip install -r requirements.txt pyinstaller
+#   .venv-pin\Scripts\pip install -e . pyinstaller
 #   .venv-pin\Scripts\pip freeze          # dependency closure
 #   .venv-pin\Scripts\python -c "import importlib.metadata as m; print('setuptools==' + m.version('setuptools'))"
 #                                         # append this pin too: Python 3.11

@@ -1,12 +1,14 @@
 """Speech-to-text transcription — supports faster-whisper (CPU) and whisper.cpp (GPU/Vulkan)."""
 
 import logging
+import os
 import threading
 
 import numpy as np
 
 from whisper_paste import bundle
 from whisper_paste import config
+from whisper_paste import model_cache
 
 logger = logging.getLogger(__name__)
 
@@ -16,20 +18,25 @@ _model_lock = threading.Lock()
 
 
 def _resolve_faster_whisper_model():
-    """What to hand WhisperModel: a bundled directory, else the configured name.
+    """Resolve a faster-whisper model without an unpinned network fallback.
 
     `config.WHISPER_MODEL` is read here, at call time, not at import time —
     `main()` rewrites config attributes from the CLI after this module is
     imported (see CLAUDE.md, "Config module is mutated at startup").
 
-    Returning a directory is legitimate: faster_whisper's WhisperModel checks
-    `os.path.isdir(model_size_or_path)` before falling back to
-    `download_model()`, so a bundled model dir short-circuits the HuggingFace
-    download. When nothing shipped for this name, the bare name goes through
-    unchanged and downloads as usual.
+    The order is deliberately policy-bearing: a bundled directory wins, then
+    an explicit existing local directory, then the manifest-backed managed
+    cache. Unknown names and Hugging Face repo IDs are rejected by
+    ``model_cache`` rather than being handed to faster-whisper's unpinned
+    downloader.
     """
     name = config.WHISPER_MODEL
-    return bundle.bundled_model_dir(name) or name
+    bundled = bundle.bundled_model_dir(name)
+    if bundled:
+        return bundled
+    if os.path.isdir(name):
+        return os.path.abspath(name)
+    return model_cache.ensure_model(name)
 
 
 def _get_model():
@@ -62,10 +69,11 @@ def _get_model():
             logger.info("whisper.cpp model loaded.")
         else:
             _backend = "faster-whisper"
+            # Resolve before importing/constructing WhisperModel so an
+            # unknown name cannot reach its unpinned Hugging Face fallback.
+            model_ref = _resolve_faster_whisper_model()
             from faster_whisper import WhisperModel
 
-            # A bundled model directory when one shipped, else the bare name.
-            model_ref = _resolve_faster_whisper_model()
             logger.info("Loading faster-whisper model '%s' on CPU...", model_ref)
             _model = WhisperModel(model_ref, device="cpu", compute_type="int8")
             logger.info("faster-whisper model loaded.")

@@ -89,7 +89,7 @@ matches what you actually received.
 
 Model weights are **not** covered by anything above. The `models\` directory is
 populated after the build from the pinned HuggingFace repositories listed in
-`packaging\models.json` (the `Systran/faster-whisper-*` conversions of OpenAI's
+`whisper_paste\resources\models.json` (the `Systran/faster-whisper-*` conversions of OpenAI's
 Whisper, MIT licensed). If your ZIP contains a `models\` directory, the terms
 for those weights are the ones stated on the corresponding HuggingFace model
 page.

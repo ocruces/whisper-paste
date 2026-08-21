@@ -11,15 +11,20 @@ running the bundle (see the build/verify steps in the repo docs).
 """
 
 import configparser
+import importlib.util
+import json
 import os
 import re
+import subprocess
+import sys
 import tomllib
+import types
+import zipfile
 
 import pytest
 from PIL import Image
 
 import whisper_paste
-from whisper_paste.app import COLOR_IDLE, create_icon_image
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGING = os.path.join(REPO_ROOT, "packaging")
@@ -27,13 +32,18 @@ PACKAGING = os.path.join(REPO_ROOT, "packaging")
 REQUIREMENTS_BUILD = os.path.join(REPO_ROOT, "requirements-build.txt")
 PYPROJECT = os.path.join(REPO_ROOT, "pyproject.toml")
 SPEC = os.path.join(PACKAGING, "whisper-paste.spec")
-MODELS_JSON = os.path.join(PACKAGING, "models.json")
+MODELS_JSON = os.path.join(REPO_ROOT, "whisper_paste", "resources", "models.json")
+LEGACY_MODELS_JSON = os.path.join(PACKAGING, "models.json")
+FETCH_MODEL = os.path.join(PACKAGING, "fetch_model.py")
 VERSION_INFO = os.path.join(PACKAGING, "version_info.txt")
 ICON = os.path.join(PACKAGING, "whisper-paste.ico")
 LAUNCHER_TEMPLATE = os.path.join(PACKAGING, "launcher-template.cmd")
 SETTINGS_TEMPLATE = os.path.join(PACKAGING, "whisper-paste.ini")
 BUILD_PS1 = os.path.join(REPO_ROOT, "scripts", "build.ps1")
 INSTALL_PS1 = os.path.join(REPO_ROOT, "scripts", "install.ps1")
+WORKFLOW = os.path.join(REPO_ROOT, ".github", "workflows", "tests.yml")
+LEGACY_REQUIREMENTS = os.path.join(REPO_ROOT, "requirements.txt")
+LEGACY_REQUIREMENTS_DEV = os.path.join(REPO_ROOT, "requirements-dev.txt")
 
 
 def _read(path):
@@ -75,10 +85,9 @@ def _requirement_lines():
 def test_every_build_requirement_is_pinned_exactly():
     """`>=` or a bare name would let the shipped ZIP drift between builds.
 
-    The whole point of a separate requirements-build.txt (requirements.txt is
-    deliberately unpinned for developers) is that it is the exact transitive
-    closure that was measured to freeze correctly. One unpinned line and the
-    closure is no longer a closure.
+    The whole point of a separate requirements-build.txt is that it is the
+    exact transitive closure that was measured to freeze correctly. One
+    unpinned line and the closure is no longer a closure.
     """
     unpinned = [line for line in _requirement_lines()
                 if not re.match(r"^[A-Za-z0-9._-]+==", line)]
@@ -227,7 +236,7 @@ def test_spec_builds_both_the_windowed_exe_and_the_console_twin():
 
 
 # --------------------------------------------------------------------------
-# models.json
+# canonical manifest and package data
 # --------------------------------------------------------------------------
 
 
@@ -243,6 +252,203 @@ def _models():
 def test_models_json_lists_the_default_model():
     """`small` is what build.ps1 ships by default; losing it breaks the build."""
     assert "small" in _models()
+
+
+EXPECTED_FASTER_WHISPER_MODELS = {
+    "tiny.en": "Systran/faster-whisper-tiny.en",
+    "tiny": "Systran/faster-whisper-tiny",
+    "base.en": "Systran/faster-whisper-base.en",
+    "base": "Systran/faster-whisper-base",
+    "small.en": "Systran/faster-whisper-small.en",
+    "small": "Systran/faster-whisper-small",
+    "medium.en": "Systran/faster-whisper-medium.en",
+    "medium": "Systran/faster-whisper-medium",
+    "large-v1": "Systran/faster-whisper-large-v1",
+    "large-v2": "Systran/faster-whisper-large-v2",
+    "large-v3": "Systran/faster-whisper-large-v3",
+    "large": "Systran/faster-whisper-large-v3",
+    "distil-large-v2": "Systran/faster-distil-whisper-large-v2",
+    "distil-medium.en": "Systran/faster-distil-whisper-medium.en",
+    "distil-small.en": "Systran/faster-distil-whisper-small.en",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "distil-large-v3.5": "distil-whisper/distil-large-v3.5-ct2",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+
+
+def test_manifest_covers_the_supported_faster_whisper_model_names():
+    """Every accepted faster-whisper name must resolve to a reviewed entry."""
+    models = _models()
+
+    assert {name: entry["repo_id"] for name, entry in models.items()} == \
+        EXPECTED_FASTER_WHISPER_MODELS
+
+
+def test_manifest_preserves_the_approved_small_entry_exactly():
+    assert _models()["small"] == {
+        "repo_id": "Systran/faster-whisper-small",
+        "revision": "536b0662742c02347bc0e980a01041f333bce120",
+        "sha256": {
+            "config.json": "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+            "model.bin": "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+            "tokenizer.json": "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+            "vocabulary.txt": "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+        },
+    }
+
+
+def test_canonical_manifest_replaces_the_legacy_manifest():
+    assert os.path.isfile(MODELS_JSON)
+    assert not os.path.exists(LEGACY_MODELS_JSON)
+
+
+def test_project_declares_manifest_package_data_and_dev_extra():
+    with open(PYPROJECT, "rb") as fh:
+        pyproject = tomllib.load(fh)
+
+    assert pyproject["project"]["optional-dependencies"]["dev"] == ["pytest"]
+    assert "resources/models.json" in pyproject["tool"]["setuptools"][
+        "package-data"
+    ]["whisper_paste"]
+
+
+def test_wheel_contains_the_canonical_manifest(tmp_path):
+    wheel_dir = tmp_path / "wheel"
+    wheel_dir.mkdir()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            "--wheel-dir",
+            str(wheel_dir),
+            REPO_ROOT,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    wheels = list(wheel_dir.glob("*.whl"))
+    assert len(wheels) == 1
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        assert "whisper_paste/resources/models.json" in wheel.namelist()
+
+
+def test_legacy_requirement_files_are_removed():
+    assert not os.path.exists(LEGACY_REQUIREMENTS)
+    assert not os.path.exists(LEGACY_REQUIREMENTS_DEV)
+
+
+def test_install_and_ci_use_the_dev_extra():
+    install = _read(INSTALL_PS1)
+    workflow = _read(WORKFLOW)
+
+    assert "installTarget = if ($Dev)" in install
+    assert re.search(r"-m pip install -e \$installTarget", install)
+    assert ".[dev]" in install
+    assert re.search(r"pip install -e ['\"]\.\[dev\]['\"]", workflow)
+    assert "requirements.txt" not in install
+    assert "requirements-dev.txt" not in install
+    assert "requirements-dev.txt" not in workflow
+
+
+def test_allowed_packaging_inputs_have_no_legacy_manifest_or_requirement_refs():
+    paths = [
+        os.path.join(REPO_ROOT, "CLAUDE.md"),
+        os.path.join(REPO_ROOT, "README.md"),
+        os.path.join(REPO_ROOT, "docs", "security-review-portable-zip.md"),
+        REQUIREMENTS_BUILD,
+        INSTALL_PS1,
+        BUILD_PS1,
+        FETCH_MODEL,
+        SPEC,
+        WORKFLOW,
+    ]
+    legacy = re.compile(r"packaging[\\/]models\.json|requirements(?:-dev)?\.txt")
+
+    offenders = {
+        path: legacy.findall(_read(path))
+        for path in paths
+        if legacy.search(_read(path))
+    }
+    assert offenders == {}
+
+
+def test_build_fetch_and_spec_use_the_canonical_manifest():
+    build = _read(BUILD_PS1)
+    fetch = _read(FETCH_MODEL)
+    spec = _read(SPEC)
+
+    assert "whisper_paste\\resources\\models.json" in build
+    assert "packaging\\models.json" not in build
+    assert "packaging\\models.json" not in fetch
+    assert "whisper_paste" in spec and "resources" in spec and "models.json" in spec
+    assert "_internal\\whisper_paste\\resources\\models.json" in build
+
+
+def test_build_rejects_extra_payload_and_avoids_huggingface_cache_metadata():
+    build = _read(BUILD_PS1)
+
+    assert ".cache" in build
+    assert "unexpected" in build.lower()
+    assert "Copy-Item -LiteralPath" in build
+
+
+def test_fetch_derives_exact_allow_patterns_and_rejects_extra_files(tmp_path, monkeypatch):
+    module_path = os.path.join(str(tmp_path), "fetch_model_under_test.py")
+    spec = importlib.util.spec_from_file_location("fetch_model_under_test", FETCH_MODEL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    manifest_path = tmp_path / "models.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "small": {
+                    "repo_id": "example/model",
+                    "revision": "a" * 40,
+                    "sha256": {
+                        "config.json": "0" * 64,
+                        "model.bin": "1" * 64,
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    dest = tmp_path / "model"
+    calls = {}
+
+    def snapshot_download(repo_id, revision, local_dir, allow_patterns):
+        calls.update(
+            repo_id=repo_id,
+            revision=revision,
+            allow_patterns=allow_patterns,
+        )
+        os.makedirs(local_dir, exist_ok=True)
+        for filename in ("config.json", "model.bin", "unexpected.txt"):
+            with open(os.path.join(local_dir, filename), "wb") as fh:
+                fh.write(b"payload")
+        os.makedirs(os.path.join(local_dir, ".cache", "huggingface"))
+        with open(os.path.join(local_dir, ".cache", "huggingface", "metadata"), "w") as fh:
+            fh.write("metadata")
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.snapshot_download = snapshot_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+
+    result = module.main([str(manifest_path), "small", str(dest)])
+
+    assert result == 1
+    assert calls["repo_id"] == "example/model"
+    assert calls["revision"] == "a" * 40
+    assert calls["allow_patterns"] == ["config.json", "model.bin"]
+    assert not (dest / ".cache").exists()
 
 
 @pytest.mark.parametrize("name", sorted(_models()))
@@ -341,6 +547,8 @@ def test_icon_256_frame_matches_the_tray_artwork():
     encoder output is not stable across Pillow versions, so that would turn a
     routine dependency bump into a spurious failure.
     """
+    from whisper_paste.app import COLOR_IDLE, create_icon_image
+
     reference = create_icon_image(COLOR_IDLE, size=256)
 
     with Image.open(ICON) as img:

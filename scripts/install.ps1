@@ -100,20 +100,17 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-Write-Host "Installing runtime dependencies (requirements.txt) ..."
-& $venvPython -m pip install -r (Join-Path $root 'requirements.txt')
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: Failed to install runtime dependencies." -ForegroundColor Red
-    exit 1
-}
-
-if ($Dev) {
-    Write-Host "Installing development dependencies (requirements-dev.txt) ..."
-    & $venvPython -m pip install -r (Join-Path $root 'requirements-dev.txt')
+Push-Location $root
+try {
+    $installTarget = if ($Dev) { ".[dev]" } else { "." }
+    Write-Host "Installing project dependencies from pyproject.toml ($installTarget) ..."
+    & $venvPython -m pip install -e $installTarget
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Failed to install development dependencies." -ForegroundColor Red
+        Write-Host "ERROR: Failed to install project dependencies." -ForegroundColor Red
         exit 1
     }
+} finally {
+    Pop-Location
 }
 
 Write-Host ""

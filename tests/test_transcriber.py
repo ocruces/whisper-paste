@@ -12,11 +12,12 @@ import pytest
 
 from whisper_paste import bundle
 from whisper_paste import config
+from whisper_paste import model_cache
 from whisper_paste import transcriber
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
+def reset_state(monkeypatch):
     """Reset lazy model globals and restore mutated config flags around each test.
 
     WHISPER_MODEL is saved/restored too: config is process-global and mutated in
@@ -25,6 +26,11 @@ def reset_state():
     """
     transcriber._model = None
     transcriber._backend = None
+    monkeypatch.setattr(
+        transcriber.model_cache,
+        "ensure_model",
+        lambda name: os.path.join("managed-models", name),
+    )
     saved_gpu = config.USE_GPU
     saved_lang = config.WHISPER_LANGUAGE
     saved_model = config.WHISPER_MODEL
@@ -251,7 +257,7 @@ def test_frozen_loads_the_bundled_model_directory(monkeypatch, frozen):
     assert kwargs == {"device": "cpu", "compute_type": "int8"}
 
 
-def test_source_checkout_passes_the_bare_model_name(monkeypatch):
+def test_source_checkout_uses_the_managed_model_cache(monkeypatch):
     config.USE_GPU = False
     config.WHISPER_MODEL = "small"
     calls = {}
@@ -262,22 +268,53 @@ def test_source_checkout_passes_the_bare_model_name(monkeypatch):
     transcriber._get_model()
 
     args, kwargs = calls["init"]
-    assert args[0] == "small"
+    assert os.path.normcase(args[0]) == os.path.normcase(
+        os.path.join("managed-models", "small")
+    )
     assert kwargs == {"device": "cpu", "compute_type": "int8"}
 
 
-def test_frozen_falls_back_to_download_for_a_model_that_did_not_ship(monkeypatch, frozen):
-    """`--model medium` on a ZIP built with `small`: the name must reach WhisperModel."""
+def test_explicit_existing_local_model_directory_precedes_managed_cache(
+    monkeypatch, tmp_path
+):
     config.USE_GPU = False
-    (frozen / "models" / "small").mkdir(parents=True)
-    config.WHISPER_MODEL = "medium"
+    local_model = tmp_path / "my-model"
+    local_model.mkdir()
+    config.WHISPER_MODEL = str(local_model)
     calls = {}
     _install_recording_faster_whisper(monkeypatch, calls)
 
     transcriber._get_model()
 
     args, _kwargs = calls["init"]
-    assert args[0] == "medium"
+    assert os.path.normcase(args[0]) == os.path.normcase(str(local_model))
+
+
+def test_unknown_model_is_rejected_before_whisper_model(monkeypatch):
+    """Unknown names must never reach faster-whisper's unpinned downloader."""
+    config.USE_GPU = False
+    config.WHISPER_MODEL = "medium"
+    constructed = []
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            constructed.append((args, kwargs))
+
+    _install_faster_whisper(monkeypatch, FakeModel)
+    monkeypatch.setattr(
+        transcriber.model_cache,
+        "ensure_model",
+        lambda name: (_ for _ in ()).throw(
+            model_cache.ModelDownloadError(
+                "Model 'medium' is not in the trusted manifest; use a supported model or local directory."
+            )
+        ),
+    )
+
+    with pytest.raises(model_cache.ModelDownloadError, match="trusted manifest"):
+        transcriber._get_model()
+
+    assert constructed == []
 
 
 def test_gpu_is_rejected_when_frozen_before_importing_pywhispercpp(monkeypatch, frozen):

@@ -39,14 +39,15 @@ def bundled_model_dir(name):
     The model is copied in after the build for that reason among others; see
     CLAUDE.md, "Packaging: the portable ZIP".
 
-    Returns None — meaning "let faster-whisper resolve `name` the usual way" —
+    Returns None — meaning the caller should continue its local/manifest resolution policy —
     when:
 
       - not frozen, so a source checkout keeps today's behaviour exactly;
       - `name` is empty;
-      - `name` is not a bare model name. A path (``C:\\models\\x``) or a
-        HuggingFace repo id (``Systran/faster-whisper-small``) has to reach
-        WhisperModel untouched, and refusing separators is also what stops
+      - `name` is not a bare model name. A path (``C:\\models\\x``) is
+        handled by the caller as an explicit local directory, while a
+        HuggingFace repo id (``Systran/faster-whisper-small``) is rejected by
+        the manifest-backed resolver. Refusing separators is also what stops
         ``--model ..\\..\\x`` from aiming the lookup outside the bundle. A
         bare drive prefix like ``C:x`` needs its own check: it has no
         separator and `os.path.isabs` calls it relative, yet it is
@@ -56,8 +57,8 @@ def bundled_model_dir(name):
         would resolve against the current directory on drive `C:` instead of
         the bundle. `os.path.splitdrive` catches this one;
       - nothing by that name shipped with this build — e.g. ``--model medium``
-        on a ZIP built with ``-Model small``, which then downloads from
-        HuggingFace as usual.
+        on a ZIP built with ``-Model small``. The caller then consults the
+        trusted manifest and rejects the name if it is not listed.
 
     Keying the directory on the model name is what lets `--model` keep working
     unchanged in a frozen build, and means a user who drops another converted
