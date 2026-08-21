@@ -307,7 +307,11 @@ def test_project_declares_manifest_package_data_and_dev_extra():
     with open(PYPROJECT, "rb") as fh:
         pyproject = tomllib.load(fh)
 
-    assert pyproject["project"]["optional-dependencies"]["dev"] == ["pytest"]
+    assert pyproject["project"]["optional-dependencies"]["dev"] == [
+        "pytest",
+        "wheel",
+    ]
+    assert "wheel" in pyproject["build-system"]["requires"]
     assert "resources/models.json" in pyproject["tool"]["setuptools"][
         "package-data"
     ]["whisper_paste"]

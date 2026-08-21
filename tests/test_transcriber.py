@@ -274,6 +274,28 @@ def test_source_checkout_uses_the_managed_model_cache(monkeypatch):
     assert kwargs == {"device": "cpu", "compute_type": "int8"}
 
 
+def test_local_model_path_is_passed_to_faster_whisper_as_a_string(
+    monkeypatch, tmp_path
+):
+    """ctranslate2's local-path binding accepts str, not pathlib.Path."""
+    config.USE_GPU = False
+    config.WHISPER_MODEL = "small"
+    managed_model = tmp_path / "managed-model"
+    calls = {}
+    monkeypatch.setattr(
+        transcriber.model_cache,
+        "ensure_model",
+        lambda name: managed_model,
+    )
+    _install_recording_faster_whisper(monkeypatch, calls)
+
+    transcriber._get_model()
+
+    args, _kwargs = calls["init"]
+    assert args[0] == str(managed_model)
+    assert isinstance(args[0], str)
+
+
 def test_explicit_existing_local_model_directory_precedes_managed_cache(
     monkeypatch, tmp_path
 ):
